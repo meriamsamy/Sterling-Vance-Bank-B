@@ -10,7 +10,7 @@ customers = {
     },
 
     1002: {
-        "name": "Haland",
+        "name": "Haaland",
         "age": 24,
         "income": 11000,
         "monthly_debt": 4500,
@@ -46,16 +46,41 @@ customers = {
     },
 }
 
-    
-
 def get_customer_data(customer_id):
+    """
+    Retrieve customer information using customer ID.
 
-    if customer_id not in customers:
-        return None
+    Args:
+        customer_id (int): Unique customer identifier.
 
-    return customers[customer_id]
+    Returns:
+        dict:
+            Customer data if found.
+    """
 
-def calculate_dti(customer):
+    return customers.get(
+        customer_id,
+        {"error": "Customer not found"}
+    )
+
+
+
+def calculate_dti(customer_id):
+    """
+    Calculate Debt-To-Income ratio for a customer.
+
+    Args:
+        customer_id (int): Unique customer identifier.
+
+    Returns:
+        float:
+            Customer DTI percentage.
+    """
+
+    customer = get_customer_data(customer_id)
+
+    if "error" in customer:
+        return 100
 
     income = customer["income"]
     debt = customer["monthly_debt"]
@@ -65,22 +90,62 @@ def calculate_dti(customer):
 
     return round((debt / income) * 100, 2)
 
-def check_basic_eligibility(customer):
 
-    if customer["age"] < 21:
+
+def check_basic_eligibility(customer_id):
+    """
+    Check customer's basic loan eligibility.
+
+    Requirements:
+        - Age >= 21
+        - Income >= 8000
+        - Employment years >= 1
+
+    Args:
+        customer_id (int): Unique customer identifier.
+
+    Returns:
+        bool:
+            True if eligible, otherwise False.
+    """
+
+    customer = get_customer_data(customer_id)
+
+    if "error" in customer:
         return False
 
-    if customer["income"] < 8000:
-        return False
+    return (
+        customer["age"] >= 21
+        and customer["income"] >= 8000
+        and customer["employment_years"] >= 1
+    )
 
-    if customer["employment_years"] < 1:
-        return False
 
-    return True
 
-def evaluate_loan_application(customer):
+def evaluate_loan_application(customer_id):
+    """
+    Evaluate customer's loan application.
 
-    dti = calculate_dti(customer)
+    Rules:
+        - Reject previous defaults >= 2.
+        - Reject DTI above 50%.
+        - Approve high income customers.
+        - Review medium risk customers.
+
+    Args:
+        customer_id (int): Unique customer identifier.
+
+    Returns:
+        str:
+            Loan decision.
+    """
+
+    customer = get_customer_data(customer_id)
+
+    if "error" in customer:
+        return "CUSTOMER_NOT_FOUND"
+
+    dti = calculate_dti(customer_id)
 
     if customer["previous_defaults"] >= 2:
         return "REJECT"
@@ -96,47 +161,123 @@ def evaluate_loan_application(customer):
 
     return "REQUEST_DOCUMENTS"
 
-def calculate_max_loan(customer):
+
+
+def calculate_max_loan(customer_id):
+    """
+    Calculate maximum loan amount.
+
+    Formula:
+        income * 24
+
+    Args:
+        customer_id (int): Unique customer identifier.
+
+    Returns:
+        int:
+            Maximum loan amount.
+    """
+
+    customer = get_customer_data(customer_id)
+
+    if "error" in customer:
+        return 0
 
     return customer["income"] * 24
 
-def approve_loan(customer):
 
-    amount = calculate_max_loan(customer)
+
+def approve_loan(customer_id):
+    """
+    Approve loan application.
+
+    Args:
+        customer_id (int): Unique customer identifier.
+
+    Returns:
+        dict:
+            Approval decision and amount.
+    """
+
+    amount = calculate_max_loan(customer_id)
 
     return {
         "decision": "APPROVED",
         "approved_amount": amount
     }
 
+
+
 def reject_loan(reason):
+    """
+    Reject loan application.
+
+    Args:
+        reason (str): Rejection reason.
+
+    Returns:
+        dict:
+            Rejection result.
+    """
 
     return {
         "decision": "REJECTED",
         "reason": reason
     }
 
+
+
 def request_documents():
+    """
+    Request additional documents.
+
+    Returns:
+        dict:
+            Document request message.
+    """
 
     return {
         "decision": "REQUEST_DOCUMENTS",
         "message": "Please upload the required documents."
     }
 
-def generate_report(customer, decision):
+
+
+def generate_report(customer_id, decision):
+    """
+    Generate loan application report.
+
+    Args:
+        customer_id (int): Unique customer identifier.
+        decision (str): Final decision.
+
+    Returns:
+        dict:
+            Customer report.
+    """
+
+    customer = get_customer_data(customer_id)
 
     return {
-        "customer": customer["name"],
+        "customer": customer.get("name", "Unknown"),
         "decision": decision
     }
 
-def classify_customer(customer):
 
-    if not check_basic_eligibility(customer):
+
+def classify_customer(customer_id):
+    """
+    Classify customer's loan application.
+
+    Args:
+        customer_id (int): Unique customer identifier.
+
+    Returns:
+        str:
+            Final classification.
+    """
+
+    if not check_basic_eligibility(customer_id):
         return "REJECT"
 
-    decision = evaluate_loan_application(customer)
-
-    return decision
-
-
+    return evaluate_loan_application(customer_id)
