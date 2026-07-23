@@ -14,6 +14,9 @@ llm = ChatGroq(
     groq_api_key=API_KEY,
     temperature=0
 )
+tool_calls = 0
+total_tokens = 0
+total_time = 0
 
 prompt = """You are an AI loan approval agent for Sterling and Vance Bank. 
 
@@ -42,21 +45,49 @@ Finally generate a report.
 
 
 def run_unconstrained_agent(question):
+
+    global tool_calls, total_tokens, total_time
+
     for chunk in agent.stream(
-    {"messages": [("user", question)]},stream_mode="updates"):
+        {"messages": [("user", question)]},
+        stream_mode="updates"
+    ):
+
         if "model" in chunk:
+
             message = chunk["model"]["messages"][-1]
+
             if message.content:
+
                 print("\nAgent:")
                 print(message.content)
 
+            metadata = message.response_metadata
+
+            if metadata:
+
+                print("\nResponse Metadata:")
+                print(metadata)
+
+                usage = metadata.get("token_usage", {})
+
+                total_tokens += usage.get("total_tokens", 0)
+
+                total_time += metadata.get("total_time", 0)
+
         elif "tools" in chunk:
+
+            tool_calls += 1
+
             tool_message = chunk["tools"]["messages"][0]
 
             print("\nTool:")
-            print(f"{tool_message.name}")
+            print(tool_message.name)
             print(tool_message.content)
 
+    print("\nsummary for comparison table:")
+    print(f"Tool Calls : {tool_calls}")
+    print(f"Total Tokens : {total_tokens}")
 
 if __name__ == "__main__":
     run_unconstrained_agent(question)
