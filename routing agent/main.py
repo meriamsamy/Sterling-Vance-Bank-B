@@ -77,10 +77,11 @@ def routing_agent(customer_id):
         "result": result,
         "report": report
     }
-    if __name__ == "__main__":
 
-         customer_id = 1001
+if __name__ == "__main__":
 
-         output = routing_agent(customer_id)
+    customer_id = 1001
 
-         print(json.dumps(output, indent=4))
+    output = routing_agent(customer_id)
+
+    print(json.dumps(output, indent=4))
