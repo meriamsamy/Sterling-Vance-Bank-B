@@ -14,12 +14,23 @@ A simple rule-based script works well for simple cases, but every possible situa
 
 An AI agent can reason step by step before making a decision. It can choose which information it needs, decide which tool to use, and use the results of previous steps to continue its reasoning until it reaches a final answer.
 
+## Requirements
+
+Before running the project, install the required Python packages:
+
+```bash
+pip install langchain
+pip install langchain-groq
+pip install python-dotenv
+pip install pydantic
+```
+
 
 ## Comparison
 
-| agent               | calls per request | token usage | latency  | what broke on tricky inputs                                                                                              |
-| ------------------- | ----------------- | ----------- | -------- | ------------------------------------------------------------------------------------------------------------------------ |
-| Reactive            | 0                 | 0           | 0.044 ms | Could not adapt to unseen or complex cases outside its hard-coded rules                                                  |
-| Unconstrained ReAct | 9                 | 3382        | 0.38     | try non existent id:<br />The agent detected that the id didn't exist but made unnecessary tool calls before rejecting |
-| Routing             |                   |             |          |                                                                                                                          |
-| Constrained ReAct   | 3                 | 2125        | 0.68     | no failure, stopped after                                                                                               |
+| agent               | calls per request | token usage     | latency  | what broke on tricky inputs                                                                                              |
+| ------------------- | ----------------- | --------------- | -------- | ------------------------------------------------------------------------------------------------------------------------ |
+| Reactive            | 0                 | 0               | 0.044 ms | Could not adapt to unseen or complex cases outside its hard-coded rules                                                  |
+| Unconstrained ReAct | 9                 | 3382            | 0.38     | try non existent id:<br />The agent detected that the id didn't exist but made unnecessary tool calls before rejecting |
+| Routing             | 1                 | less than ReAct | 0.4374   | No routing failures observed                                                                                             |
+| Constrained ReAct   | 3                 | 2125            | 0.68     | no failure, stopped after                                                                                               |
