@@ -12,7 +12,11 @@ The bank needs to decide whether a customer's loan application should be approve
 
 A simple rule-based script works well for simple cases, but every possible situation must be written as fixed rules. As the decision process becomes more complex, the script becomes harder to update and maintain.
 
-An AI agent can reason step by step before making a decision. It can choose which information it needs, decide which tool to use, and use the results of previous steps to continue its reasoning until it reaches a final answer.
+An AI agent can reason step by step before making a decision. It can choose which information it needs, decide which tool to use, and use the results of previous steps to continue its reasoning until it reaches a final answer.    
+
+### Presentation and demo link        
+The design was by Silvana Marzouk and written by all of us          
+https://docs.google.com/presentation/d/1alKPV4nFntZwaykGyq3jZPkx6vYcy0Gl/edit?usp=drive_link&ouid=105576425572035483121&rtpof=true&sd=true
 
 ## Requirements
 
