@@ -19,7 +19,7 @@ An AI agent can reason step by step before making a decision. It can choose whic
 
 | agent               | calls per request | token usage | latency  | what broke on tricky inputs                                                                                              |
 | ------------------- | ----------------- | ----------- | -------- | ------------------------------------------------------------------------------------------------------------------------ |
-| Reactive            | 0                 | 0           | 0.044 ms |                                                                                                                          |
+| Reactive            | 0                 | 0           | 0.044 ms | Could not adapt to unseen or complex cases outside its hard-coded rules                                                  |
 | Unconstrained ReAct | 9                 | 3382        | 0.38     | try non existent id:<br />The agent detected that the id didn't exist but made unnecessary tool calls before rejecting |
 | Routing             |                   |             |          |                                                                                                                          |
 | Constrained ReAct   | 3                 | 2125        | 0.68     | no failure, stopped after                                                                                               |
