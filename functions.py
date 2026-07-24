@@ -44,6 +44,15 @@ customers = {
         "employment_years": 1,
         "previous_defaults": 0
     },
+
+     1006: {
+    "name": "Ahmed_Freelancer",
+    "age": 30,
+    "income": 3000,          
+    "monthly_debt": 3500,
+    "employment_years": 3,
+    "previous_defaults": 0
+}
 }
 
 def get_customer_data(customer_id):
