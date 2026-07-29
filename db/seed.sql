@@ -1,6 +1,7 @@
 INSERT INTO customers (customer_id, name, national_id, risk_level, created_at)
 VALUES (1, 'Ahmed Ali', '29001234567', 'low', '2024-01-01');
 
+
 INSERT INTO customers (customer_id, name, national_id, risk_level, created_at)
 VALUES (2, 'Sara Mahmoud', '29505678901', 'low', '2024-01-05');
 
