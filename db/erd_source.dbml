@@ -1,0 +1,60 @@
+Table customers {
+  customer_id int [pk]
+  name varchar
+  national_id varchar
+  risk_level varchar
+  created_at varchar
+}
+
+Table accounts {
+  account_id int [pk]
+  customer_id int [ref: > customers.customer_id]
+  account_number varchar
+  account_type varchar
+  balance float
+  created_at varchar
+}
+
+Table transactions {
+  transaction_id int [pk]
+  account_id int [ref: > accounts.account_id]
+  type varchar
+  amount float
+  source varchar
+  timestamp varchar
+}
+
+Table employees {
+  employee_id int [pk]
+  name varchar
+  role varchar
+  related_customer_id int [ref: > customers.customer_id]
+}
+
+Table wire_transfers {
+  transfer_id int [pk]
+  source_account_id int [ref: > accounts.account_id]
+  destination_account_num varchar
+  destination_country varchar
+  amount float
+  status varchar
+  flag_reason varchar
+  initiated_by int [ref: > employees.employee_id]
+  approved_by int [ref: > employees.employee_id]
+  timestamp varchar
+}
+
+Table sanctions_list {
+  country_code varchar [pk]
+  reason varchar
+  last_updated varchar
+}
+
+Table compliance_reviews {
+  review_id int [pk]
+  transfer_id int [ref: > wire_transfers.transfer_id]
+  reviewer_id int [ref: > employees.employee_id]
+  decision varchar
+  notes varchar
+  timestamp varchar
+}
