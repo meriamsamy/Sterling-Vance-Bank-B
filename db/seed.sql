@@ -76,3 +76,9 @@ VALUES (2, 3, 1, 'denied', 'Transaction flagged for structuring', '2024-03-06');
 
 INSERT INTO compliance_reviews (review_id, transfer_id, reviewer_id, decision, notes, timestamp)
 VALUES (3, 4, 2, 'denied', 'Transaction flagged for self_dealing', '2024-03-11');
+INSERT INTO transactions (transaction_id, account_id, type, amount, source, timestamp)
+VALUES
+(10, 1, 'incoming', 9000, 'external_customer_A', '2024-02-01'),
+(11, 1, 'incoming', 8500, 'external_customer_B', '2024-02-02'),
+(12, 1, 'incoming', 7000, 'external_customer_C', '2024-02-03'),
+(13, 1, 'outgoing', 23000, 'international_wire', '2024-02-04');
