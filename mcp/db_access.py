@@ -43,6 +43,37 @@ def get_account(account_id: int):
     conn.close()
     return row
 
+def get_transaction_history(account_id):
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT type, amount, source, timestamp
+        FROM transactions
+        WHERE account_id = ?
+        ORDER BY timestamp DESC
+        LIMIT 10
+        """,
+        (account_id,)
+    )
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    if not rows:
+        return "No recent transactions found."
+
+    history = []
+
+    for row in rows:
+        history.append(
+            f"Type: {row['type']}, Amount: {row['amount']}, Source: {row['source']}, Time: {row['timestamp']}"
+        )
+
+    return "\n".join(history)
 
 def is_sanctioned(country_code: str) -> bool:
     conn = get_conn()
