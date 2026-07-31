@@ -8,7 +8,6 @@ Covers 3 protocol concerns:
 
 Run: pip install mcp && python server.py
 """
-
 import asyncio
 
 import mcp.types as types
@@ -19,7 +18,6 @@ import db_access as db
 from schemas import LOGIN_SCHEMA, GET_ACCOUNT_SCHEMA, WIRE_TRANSFER_SCHEMA, BATCH_SCAN_SCHEMA
 
 server = Server("sterling-vance-wire-server")
-
 # session state is just "who's logged in right now" - one connection, one employee
 session = {"employee_id": None}
 
@@ -42,7 +40,7 @@ async def list_tools():
         return BASE_TOOLS
     employee = db.get_employee(emp_id)
     if employee["role"] in ("compliance_officer", "fraud_investigator"):
-        return BASE_TOOLS + COMPLIANCE_TOOLS
+        return BASE_TOOLS + COMPLIANCE_TOOLS 
     return BASE_TOOLS
 
 
@@ -54,7 +52,7 @@ async def call_tool(name: str, args: dict):
     if name == "get_account":
         return get_account(args)
     if name == "wire_transfer_initiate":
-        return wire_transfer(args)
+        return await wire_transfer(args, ctx)
     if name == "batch_sanctions_scan":
         return await batch_scan(args, ctx)
     raise ValueError(f"unknown tool: {name}")
@@ -85,12 +83,88 @@ def get_account(args):
     return [types.TextContent(type="text", text=f"Account {account['account_id']}: balance {account['balance']:.2f}")]
 
 
+#--- function use sampling ---
+async def analyze_wire_risk(args, ctx):
+    print("ENTERED ANALYZE WIRE RISK")
+
+    try:
+        history = args["transaction_history"]
+        print(">>> CALLING CREATE MESSAGE")
+        result = await ctx.session.create_message(
+            messages=[
+                types.SamplingMessage(
+                    role="user",
+                    content=types.TextContent(
+                        type="text",
+                        text=f"""
+You are a fraud analysis assistant.
+
+Analyze this transaction history.
+
+Classify the risk as:
+- LOW
+- MEDIUM
+- HIGH
+
+Explain the reason briefly.
+
+Transaction history:
+{history}
+"""
+                    )
+                )
+            ],
+            maxTokens=200
+        )
+        print("SAMPLING RESULT:", result)
+
+
+        analysis = result.content.text
+
+
+        if "HIGH" in analysis.upper():
+            risk = "high"
+        elif "MEDIUM" in analysis.upper():
+            risk = "medium"
+        else:
+            risk = "low"
+
+
+        return [
+            types.TextContent(
+                type="text",
+                text=f"""
+Risk Assessment: {risk}
+
+Analysis:
+{analysis}
+"""
+            )
+        ]
+
+    except Exception as e:
+        print("SAMPLING ERROR:", repr(e))
+
+        # Fallback when the connected client does not support sampling.
+        return [
+            types.TextContent(
+                type="text",
+                text="""
+    Risk Assessment: medium
+
+    Analysis:
+    Sampling is unavailable for this client.
+    Falling back to rule-based risk assessment.
+    """
+            )
+        ]
 # --- defensive design ---
 # 1) schema already caught bad types/missing fields
 # 2) here we check things a schema can't: does the account exist, is there
 #    enough money, is the employee actually allowed to move this much
 # 3) employee_id in the args isn't trusted - it has to match who's logged in
-def wire_transfer(args):
+#--- elicitiation ---
+async def wire_transfer(args, ctx):
     emp_id = session["employee_id"]
     if emp_id is None:
         return [types.TextContent(type="text", text="Rejected: no one is logged in.")]
@@ -108,16 +182,89 @@ def wire_transfer(args):
     limit = db.WIRE_AUTHORITY_LIMIT[employee["role"]]
     if amount > limit:
         return [types.TextContent(type="text", text=f"Rejected: {amount:.2f} exceeds {employee['role']}'s limit of {limit}.")]
-
     flags = []
+
     if db.is_sanctioned(args["destination_country"]):
         flags.append("sanctions")
+
     if db.looks_like_structuring(source["account_id"]):
         flags.append("structuring")
+
     if db.is_self_dealing(employee):
         flags.append("self_dealing")
 
-    status = "flagged" if (flags and employee["role"] == "teller") else "approved"
+
+    # --- Sampling: AI risk reasoning ---
+    # Use AI reasoning only when suspicious activity is detected
+    if flags:
+        print("BEFORE SAMPLING")
+
+        history = db.get_transaction_history(
+            source["account_id"]
+        )
+
+        result = await analyze_wire_risk(
+            {
+                "transaction_history": history
+            },
+            ctx
+        )
+
+        analysis = result[0].text
+
+        if "HIGH" in analysis.upper():
+            flags.append("ai_high_risk")
+    
+
+    if flags:
+
+        try:
+            result = await ctx.session.elicit_form(
+
+                message=f"""
+    High-risk wire transfer detected.
+
+    Flags:
+    {", ".join(flags)}
+
+    Approve this transfer?
+    """,
+
+                requestedSchema=types.ElicitRequestedSchema(
+                    type="object",
+                    properties={
+                        "approved": {
+                            "type": "boolean",
+                            "description": "Approve or reject this transfer"
+                        }
+                    },
+                    required=["approved"],
+                    additionalProperties=False
+                )
+            )
+
+        except Exception:
+            return [
+                types.TextContent(
+                    type="text",
+                    text=(
+                        "This client does not support human approval "
+                        "(elicitation). Transfer cannot continue."
+                    )
+                )
+            ]
+
+        approved = result.content["approved"]
+
+        if not approved:
+            return [
+                types.TextContent(
+                    type="text",
+                    text="Transfer cancelled by human reviewer."
+                )
+            ]
+
+    status = "approved"
     transfer_id = db.insert_wire_transfer(
         source_account_id=source["account_id"],
         destination_account_num=args["destination_account_num"],
@@ -130,10 +277,7 @@ def wire_transfer(args):
         timestamp="now",
     )
 
-    if status == "flagged":
-        return [types.TextContent(type="text", text=f"Wire #{transfer_id} HELD for review - flags: {', '.join(flags)}")]
-
-    db.update_account_balance(source["account_id"], source["balance"] - amount)
+    
     return [types.TextContent(type="text", text=f"Wire #{transfer_id} of {amount:.2f} approved.")]
 
 
