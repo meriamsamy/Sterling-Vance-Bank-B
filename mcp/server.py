@@ -206,7 +206,7 @@ async def analyze_wire_risk(transaction_history: str, ctx) -> str:
                 ),
             )
         ],
-        maxTokens=200,
+        max_tokens=200,
     )
     analysis = result.content.text
     risk = "high" if "HIGH" in analysis.upper() else "medium" if "MEDIUM" in analysis.upper() else "low"

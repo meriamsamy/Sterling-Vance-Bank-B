@@ -109,6 +109,9 @@ async def main():
         text = result.content if isinstance(result.content, str) else "".join(
             block.get("text", "") for block in result.content if isinstance(block, dict)
         )
+        print("Model verdict:")
+        print(text[:300])
+        print("--- END SAMPLING RESPONSE ---\n")
         return types.CreateMessageResult(
             role="assistant",
             content=types.TextContent(type="text", text=text),
