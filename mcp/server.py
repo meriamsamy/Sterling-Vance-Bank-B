@@ -298,8 +298,72 @@ async def batch_scan(args, ctx):
             await ctx.session.send_progress_notification(progress_token=progress_token, progress=scanned, total=total)
 
     return [types.TextContent(type="text", text=f"Scanned {total} transactions.")]
+RESOURCES = [
+    types.Resource(
+        uri=AnyUrl("sanctions://list"),
+        name="sanctions_list",
+        description="List of countries currently under sanctions",
+        mimeType="text/plain",
+    ),
+]
 
 
+@server.list_resources()
+async def list_resources():
+    return RESOURCES
+@server.read_resource()
+async def read_resource(uri: AnyUrl):
+    if str(uri) == "sanctions://list":
+        rows = db.get_sanctions_list()  # [(country_code, reason), ...]
+        return "\n".join(f"{code}: {reason}" for code, reason in rows)
+    raise ValueError(f"unknown resource: {uri}")
+    
+PROMPTS = [
+    types.Prompt(
+        name="explain_flagged_transfer",
+        description="Draft a compliance explanation for a flagged wire transfer",
+        arguments=[
+            types.PromptArgument(name="transfer_id", description="ID of the flagged transfer", required=True),
+        ],
+    ),
+]
+
+
+@server.list_prompts()
+async def list_prompts():
+    return PROMPTS
+
+@server.get_prompt()
+async def get_prompt(name: str, arguments: dict):
+    if name != "explain_flagged_transfer":
+        raise ValueError(f"unknown prompt: {name}")
+
+    emp_id = session["employee_id"]
+    if emp_id is None:
+        raise ValueError("Rejected: no one is logged in.")
+
+    employee = db.get_employee(emp_id)
+    if employee is None or employee["role"] not in ("compliance_officer", "fraud_investigator"):
+        raise ValueError("Rejected: requires compliance or fraud investigator role.")
+
+    transfer_id = arguments["transfer_id"]
+
+transfer = db.get_wire_transfer(transfer_id)
+    if transfer is None:
+        raise ValueError(f"Transfer {transfer_id} not found")
+
+    text = (
+        f"Write a compliance explanation for wire transfer #{transfer_id}. "
+        f"It was flagged for '{transfer['flag_reason']}'. "
+        f"Amount: {transfer['amount']}, Destination country: {transfer['destination_country']}. "
+        f"Explain clearly why this transfer required human review."
+    )
+    return types.GetPromptResult(
+        description="Compliance explanation draft",
+        messages=[
+            types.PromptMessage(role="user", content=types.TextContent(type="text", text=text))
+        ],
+    )
 async def main():
     async with stdio_server() as (read, write):
         await server.run(read, write, server.create_initialization_options())
