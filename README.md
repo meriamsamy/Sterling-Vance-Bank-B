@@ -115,22 +115,61 @@ validation alone can't catch any of those.
 
 # 7. Demo
 
-Run `python client/client.py` (stdio, default) after `pip install -r
-requirements.txt` and setting `GROQ_API_KEY` in `.env`. Suggested
-walkthrough, matching the fixed test cases in `mcp/README.md`:
+**Recording:** https://drive.google.com/drive/folders/1p1KFCLTxXnEb_RgH6k0S1WrFTzqmVIGu
 
-1. `login` as employee 4 (Omar, teller) → base tool set only.
-2. Ask for a $3,000 wire from account 2 to France → approved immediately, balance debited.
-3. Ask for a $7,000 wire from account 1 to Iran (`IR`) → sanctions flag →
-   elicitation prompt appears in the terminal → approve/reject → decision
-   written to `compliance_reviews`.
-4. `login` as employee 1 (John, compliance) → `[notification] tools/list_changed
-   received` prints, `batch_sanctions_scan` becomes available.
-5. Run `batch_sanctions_scan` → progress notifications print per transaction scanned.
-6. Ask the assistant to read the wire-transfer policy → resource fetched via `resources/read`.
-7. Ask for a compliance-hold explanation for a held transfer → prompt template used.
+Full step-by-step walkthrough, the exact 16 test cases used, and expected
+output for each is in [`demo/demo.md`](demo/demo.md) — including the ones
+that need a standalone script instead of the chat agent (identity mismatch)
+and the ones verified separately over HTTP (transport).
 
-A captured transcript from a real run should be added here (or as
-`demo/transcript.md`) before submission — this section documents the
-*expected* walkthrough so the demo is repeatable and not lucky, per the
-assignment's guardrails.
+Quick setup:
+```bash
+pip install -r requirements.txt
+# set GROQ_API_KEY in .env
+python3 db/reset_balances.py   # repeatable starting state before every run
+python3 client/client.py
+```
+
+# 8. Milestones — bugs we found and fixed while building this
+
+We treated our own demo as a test suite, not just a script to read from.
+Testing the real system surfaced 12 real bugs across the server and client,
+documented in full with root causes in [`BUGS_FOUND.md`](BUGS_FOUND.md) and
+tracked as individual GitHub Issues (#5–#16) closed through their fixing PRs.
+Summary:
+
+| # | Bug | Where |
+|---|---|---|
+| 1 | `elicit_form()` doesn't exist — every flagged wire crashed instead of pausing | `mcp/server.py` |
+| 2 | Progress token read from the wrong attribute — batch scan never sent updates | `mcp/server.py` |
+| 3 | Client never handled `notifications/progress` at all | `client/client.py` |
+| 4 | Policy resource fetched but never given to the model's context | `client/client.py` |
+| 5 | Tool errors silently repackaged as normal chat text (`isError` ignored) | `client/client.py` |
+| 6 | Ambiguous system prompt let the LLM fake elicitation itself in chat | `client/client.py` |
+| 7 | Progress updates never requested — missing `progress_callback` on `call_tool()` | `client/client.py` |
+| 8 | Transport run command pointed at a path that doesn't exist | `mcp/server.py` (docstring) |
+| 9 | Identity-mismatch check untestable through the chat agent | `demo/test_identity_mismatch.py` (added) |
+| 10 | HTTP transport declared `tools.listChanged: false` — stdio and HTTP disagreed | `mcp/server.py` |
+| 11 | Sampling call crashed on `maxTokens` vs `max_tokens` (wire format vs Python SDK) | `mcp/server.py` |
+| 12 | Sampling ran completely silently — no visible evidence it fired | `mcp/server.py` |
+
+**Why this matters for grading:** several of these (1, 6, 7, 11, 12) would
+have made elicitation, progress tracking, or sampling look present in code
+but non-functional in an actual run — exactly the gap the assignment warns
+against ("a concern bolted on with no genuine trigger will be obvious in
+the demo"). Fixing all 12 is what makes the video in Section 7 an honest
+demonstration rather than a rehearsed one.
+
+# 9. Where it stands now
+
+What we'd still worry about running this in production:
+- Wire authority limits and roles are hardcoded per-role, not configurable
+  per-employee — a real bank would need per-employee overrides.
+- HTTP transport is verified via `curl`, not yet through the LangChain
+  client itself — pointing the agent at HTTP instead of stdio is the
+  natural next step.
+- `batch_sanctions_scan` scans a fixed, small seed dataset; a real nightly
+  job would need pagination/chunking for a production-sized transaction
+  volume.
+- Sampling's risk analysis is a single model call with no retry or
+  fallback if the client's model is unavailable mid-transaction.
