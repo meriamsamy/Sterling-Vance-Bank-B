@@ -128,6 +128,74 @@ def update_account_balance(account_id: int, new_balance: float):
     conn.close()
 
 
+def debit_account(account_id: int, amount: float) -> float:
+    """Atomically debit an account and return the new balance.
+    Called from wire_transfer() once a transfer is actually approved -
+    previously this never happened, so approved wires didn't move money.
+    """
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT balance FROM accounts WHERE account_id = ?", (account_id,)
+    ).fetchone()
+    new_balance = row["balance"] - amount
+    conn.execute(
+        "UPDATE accounts SET balance = ? WHERE account_id = ?", (new_balance, account_id)
+    )
+    conn.commit()
+    conn.close()
+    return new_balance
+
+
+def credit_account(account_id: int, amount: float) -> float:
+    """Add money to an account. The counterpart to debit_account() -
+    useful for topping test accounts back up between demo runs, since
+    every approved wire permanently reduces the source balance.
+    """
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT balance FROM accounts WHERE account_id = ?", (account_id,)
+    ).fetchone()
+    new_balance = row["balance"] + amount
+    conn.execute(
+        "UPDATE accounts SET balance = ? WHERE account_id = ?", (new_balance, account_id)
+    )
+    conn.commit()
+    conn.close()
+    return new_balance
+
+
+def set_wire_approver(
+    transfer_id: int, approved_by: int, status: str):
+    """Record who actually approved/rejected a held transfer.
+    Previously approved_by was always written as NULL, even after a human
+    signed off via elicitation - no audit trail of who approved what.
+    """
+    conn = get_conn()
+    conn.execute(
+        "UPDATE wire_transfers SET approved_by = ?, status = ? WHERE transfer_id = ?",
+        (approved_by, status, transfer_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def insert_compliance_review(transfer_id: int, reviewer_id: int, decision: str, notes: str, timestamp: str) -> int:
+    """Log the human decision on a flagged wire into compliance_reviews.
+    This table existed in schema.sql/the ERD but nothing ever wrote to it -
+    every elicitation outcome now leaves an audit record here.
+    """
+    conn = get_conn()
+    cur = conn.execute(
+        """INSERT INTO compliance_reviews (transfer_id, reviewer_id, decision, notes, timestamp)
+           VALUES (?, ?, ?, ?, ?)""",
+        (transfer_id, reviewer_id, decision, notes, timestamp),
+    )
+    conn.commit()
+    review_id = cur.lastrowid
+    conn.close()
+    return review_id
+
+
 def get_transaction_count() -> int:
     conn = get_conn()
     count = conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]

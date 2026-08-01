@@ -1,3 +1,5 @@
 __pycache__/
 *.pyc
+.envdemo/*.mp4
+demo/*.mp4
 .env
