@@ -146,7 +146,26 @@ def debit_account(account_id: int, amount: float) -> float:
     return new_balance
 
 
-def set_wire_approver(transfer_id: int, approved_by: int, status: str):
+def credit_account(account_id: int, amount: float) -> float:
+    """Add money to an account. The counterpart to debit_account() -
+    useful for topping test accounts back up between demo runs, since
+    every approved wire permanently reduces the source balance.
+    """
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT balance FROM accounts WHERE account_id = ?", (account_id,)
+    ).fetchone()
+    new_balance = row["balance"] + amount
+    conn.execute(
+        "UPDATE accounts SET balance = ? WHERE account_id = ?", (new_balance, account_id)
+    )
+    conn.commit()
+    conn.close()
+    return new_balance
+
+
+def set_wire_approver(
+    transfer_id: int, approved_by: int, status: str):
     """Record who actually approved/rejected a held transfer.
     Previously approved_by was always written as NULL, even after a human
     signed off via elicitation - no audit trail of who approved what.

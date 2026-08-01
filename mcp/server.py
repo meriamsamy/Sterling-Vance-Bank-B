@@ -14,10 +14,12 @@ below so a grader can find it without reading the whole file:
   [DEFENSIVE TOOL DESIGN]  - wire_transfer() + schemas.py
 
 Run (dev, stdio):    python server.py
-Run (deployed, HTTP): TRANSPORT=http python server.py
+Run (deployed, HTTP): TRANSPORT=http python mcp/server.py   (run from the project root)
+                  or: cd mcp && TRANSPORT=http python server.py
 """
 import asyncio
 import os
+import sys
 from datetime import datetime, timezone
 
 import mcp.types as types
@@ -209,6 +211,7 @@ async def analyze_wire_risk(transaction_history: str, ctx) -> str:
         max_tokens=200,
     )
     analysis = result.content.text
+    print(f"\n[SAMPLING] AI risk analysis (via client's model):\n{analysis}\n", file=sys.stderr)
     risk = "high" if "HIGH" in analysis.upper() else "medium" if "MEDIUM" in analysis.upper() else "low"
     return f"Risk Assessment: {risk}\n\nAnalysis:\n{analysis}"
 
@@ -291,7 +294,7 @@ async def wire_transfer(args, ctx):
                 ),
             )]
 
-        result = await ctx.session.elicit_form(
+        result = await ctx.session.elicit(
             message=(
                 f"High-risk wire transfer detected.\n\nFlags: {', '.join(flags)}\n\n"
                 "Approve this transfer?"
@@ -303,7 +306,10 @@ async def wire_transfer(args, ctx):
                 additionalProperties=False,
             ),
         )
-        approved = result.content["approved"]
+        # A human can decline/cancel the elicitation entirely, not just answer
+        # the form - treat anything other than an accepted "approved: true"
+        # as a rejection instead of crashing on a missing dict key.
+        approved = result.action == "accept" and bool(result.content.get("approved"))
 
         db.insert_compliance_review(
             transfer_id=transfer_id,
@@ -347,7 +353,10 @@ async def batch_scan(args, ctx):
         return [types.TextContent(type="text", text="Rejected: requires compliance or fraud investigator role.")]
 
     total = db.get_transaction_count()
-    progress_token = getattr(ctx.request, "progress_token", None)
+    # The progress token rides in on request metadata (ctx.meta.progressToken),
+    # not on a "request" attribute - a client that didn't ask for progress
+    # updates simply won't send one, which is why this still checks for None.
+    progress_token = getattr(ctx.meta, "progressToken", None) if ctx.meta else None
 
     for scanned in range(1, total + 1):
         await asyncio.sleep(0.1)  # stands in for real scan work
@@ -373,6 +382,26 @@ def build_init_options():
         notification_options=NotificationOptions(tools_changed=True),
         experimental_capabilities={},
     )
+
+
+# StreamableHTTPSessionManager negotiates capabilities on its own per-session
+# instead of taking an initialization_options argument the way server.run()
+# does for stdio - left alone, it calls server.create_initialization_options()
+# with no arguments, which defaults tools_changed to False. That's why the
+# HTTP path was declaring tools.listChanged=false even though stdio had it
+# right. Patching the default here keeps both transports honest about the
+# same declared capabilities, regardless of which one a given SDK version
+# actually calls internally.
+_original_create_initialization_options = server.create_initialization_options
+
+
+def _create_initialization_options_with_our_defaults(*args, **kwargs):
+    kwargs.setdefault("notification_options", NotificationOptions(tools_changed=True))
+    kwargs.setdefault("experimental_capabilities", {})
+    return _original_create_initialization_options(*args, **kwargs)
+
+
+server.create_initialization_options = _create_initialization_options_with_our_defaults
 
 
 async def run_stdio():

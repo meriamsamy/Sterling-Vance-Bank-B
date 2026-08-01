@@ -29,7 +29,13 @@ Available operations:
 Rules:
 - Always call tools instead of answering banking requests from memory.
 - Never claim an operation succeeded unless the tool returned success.
-- If human approval is requested, wait for the result before responding.
+- wire_transfer_initiate handles compliance holds and human approval
+  internally. Call it directly for every transfer request, even ones you
+  suspect are high-risk. Do not ask the user for approval yourself, and do
+  not describe a hold as having happened before calling the tool - the tool
+  call itself will pause for a human approver when needed.
+- If a tool result contains an error, report the failure plainly instead of
+  inventing a plausible-sounding outcome.
 """
 
 
@@ -75,9 +81,32 @@ SCHEMAS = {
 # -------- MCP TOOL WRAPPER --------
 
 def convert_mcp_tool(session, mcp_tool):
+    async def progress_handler(progress: float, total: float | None, message: str | None = None):
+        # [PROGRESS TRACKING] this is the actual hook the SDK uses - progress
+        # notifications are correlated to the specific in-flight call via
+        # this callback, not broadcast through the generic message_handler.
+        if total:
+            print(f"[progress] {int(progress)}/{int(total)} scanned", end="\r")
+        else:
+            print(f"[progress] {progress}", end="\r")
+
     async def call(**kwargs):
-        result = await session.call_tool(mcp_tool.name, arguments=kwargs)
-        return "\n".join(item.text for item in result.content if hasattr(item, "text"))
+        if mcp_tool.name == "batch_sanctions_scan":
+            result = await session.call_tool(
+                mcp_tool.name, arguments=kwargs, progress_callback=progress_handler
+            )
+        else:
+            result = await session.call_tool(mcp_tool.name, arguments=kwargs)
+
+        text = "\n".join(item.text for item in result.content if hasattr(item, "text"))
+
+        # A tool-level failure (isError=True) was previously joined and
+        # handed to the model exactly like a success, so the LLM improvised
+        # a plausible-sounding answer around a real crash instead of
+        # reporting it. Surface it plainly instead.
+        if result.isError:
+            return f"TOOL ERROR: {text}"
+        return text
 
     return StructuredTool.from_function(
         coroutine=call,
@@ -109,9 +138,6 @@ async def main():
         text = result.content if isinstance(result.content, str) else "".join(
             block.get("text", "") for block in result.content if isinstance(block, dict)
         )
-        print("Model verdict:")
-        print(text[:300])
-        print("--- END SAMPLING RESPONSE ---\n")
         return types.CreateMessageResult(
             role="assistant",
             content=types.TextContent(type="text", text=text),
@@ -136,9 +162,17 @@ async def main():
         # notification (with its .method) lives at .root on some SDK
         # versions and directly on the object on others - handle both.
         notif = getattr(message, "root", message)
-        if getattr(notif, "method", None) == "notifications/tools/list_changed":
+        method = getattr(notif, "method", None)
+        if method == "notifications/tools/list_changed":
             print("\n[notification] tools/list_changed received - refreshing tool list")
             tools_ref["dirty"] = True
+        elif method == "notifications/progress":
+            # Progress is actually delivered via the per-call progress_callback
+            # in convert_mcp_tool() now (that's the mechanism the SDK
+            # correlates to a specific in-flight request). This branch is a
+            # harmless fallback in case a future call doesn't register one.
+            p = notif.params
+            print(f"[progress] {p.progress}/{p.total} scanned", end="\r")
 
     server_params = StdioServerParameters(command="python", args=["mcp/server.py"])
 
@@ -179,7 +213,20 @@ async def main():
         agent = build_agent(llm, tools)
         print("\nAgent Ready")
 
+        # [RESOURCES] Fetching the policy is pointless if the model never
+        # actually sees it - previously this was only printed to the
+        # terminal. Seed the conversation with it so questions like "what's
+        # the wire transfer policy" can actually be answered.
         conversation = []
+        if caps.resources is not None and resources.resources:
+            conversation.append({
+                "role": "user",
+                "content": f"Reference material - the bank's wire transfer policy:\n\n{policy.contents[0].text}",
+            })
+            conversation.append({
+                "role": "assistant",
+                "content": "Understood, I'll use this policy when answering compliance questions.",
+            })
         while True:
             user = input("\nRequest: ")
             if user.lower() in ("exit", "quit"):
