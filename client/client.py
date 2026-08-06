@@ -2,7 +2,9 @@ import asyncio
 import os
 from pathlib import Path
 import sys
+from dotenv import load_dotenv
 
+load_dotenv()
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 from mcp import ClientSession, StdioServerParameters, types
@@ -11,9 +13,11 @@ from mcp.client.stdio import stdio_client
 from langchain_groq import ChatGroq
 from langchain_core.tools import StructuredTool
 from langchain.agents import create_agent
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage,convert_to_messages
 from pydantic import BaseModel, Field
 
 from config import API_KEY
+ACTIVE_CONTEXT_STRATEGY = os.getenv("CONTEXT_STRATEGY", "zone")
 
 SYSTEM_PROMPT = """
 You are a banking assistant.
@@ -127,7 +131,7 @@ async def main():
     transport = os.getenv("TRANSPORT", "stdio").lower()
 
     # Client model used for both the LangChain agent and MCP sampling.
-    llm = ChatGroq(api_key=API_KEY, model="openai/gpt-oss-20b", temperature=0.1)
+    llm = ChatGroq(groq_api_key=API_KEY, model="openai/gpt-oss-20b", temperature=0.1)
 
     # -------- SAMPLING CALLBACK --------
     # [SAMPLING] The server never reasons on its own model - every
@@ -217,30 +221,110 @@ async def main():
         # actually sees it - previously this was only printed to the
         # terminal. Seed the conversation with it so questions like "what's
         # the wire transfer policy" can actually be answered.
-        conversation = []
+
+
+        from memory.short_term_memory.short_term_memory import ShortTermMemory
+        from memory.short_term_memory.scratchpad import Scratchpad
+        from memory.context_strategies.context_manager import ContextManager
+
+        memory = ShortTermMemory(max_messages=20)
+        scratchpad = Scratchpad()
+        context_manager = ContextManager()
+
         if caps.resources is not None and resources.resources:
-            conversation.append({
-                "role": "user",
-                "content": f"Reference material - the bank's wire transfer policy:\n\n{policy.contents[0].text}",
-            })
-            conversation.append({
-                "role": "assistant",
-                "content": "Understood, I'll use this policy when answering compliance questions.",
-            })
+
+            memory.add_message(
+                "user",
+                f"Reference material - the bank's wire transfer policy:\n\n{policy.contents[0].text}"
+            )
+
+            memory.add_message(
+                "assistant",
+                "Understood, I'll use this policy when answering compliance questions."
+            )
+
+
         while True:
             user = input("\nRequest: ")
             if user.lower() in ("exit", "quit"):
                 break
 
-            conversation.append({"role": "user", "content": user})
-            response = await agent.ainvoke({"messages": conversation})
+            # -------- SCRATCHPAD: working state --------
+            scratchpad.set_goal(user)
+            scratchpad.set_current_step("Calling MCP tools to fulfill the request")
+
+            memory.add_message("user", user)
+
+            raw_context = context_manager.process(
+                ACTIVE_CONTEXT_STRATEGY,
+                memory.get_messages()
+            )
+            
+            context_messages = []
+            for m in raw_context:
+                if isinstance(m, dict):
+                    if m.get("role") in ("tool", "function"):
+                        if "tool_call_id" not in m:
+                            m["tool_call_id"] = "fallback_call_id"
+                        if "name" not in m:
+                            m["name"] = "unknown_tool"
+                    context_messages.extend(convert_to_messages([m]))
+                elif isinstance(m, ToolMessage):
+                    if not getattr(m, "tool_call_id", None):
+                        m.tool_call_id = "fallback_call_id"
+                    if not getattr(m, "name", None):
+                        m.name = "unknown_tool"
+                    context_messages.append(m)
+                else:
+                    context_messages.append(m)
+                               
+            scratchpad_state = scratchpad.get_state()
+            scratchpad_context_str = (
+                f"[Internal Scratchpad State]\n"
+                f"Goal: {scratchpad_state['goal']}\n"
+                f"Current Step: {scratchpad_state['current_step']}\n"
+                f"Notes: {', '.join(scratchpad_state['notes'])}\n"
+            )
+
+            augmented_context = [
+                SystemMessage(content=scratchpad_context_str)
+            ] + context_messages
+
+            response = await agent.ainvoke({"messages": augmented_context})
+
+            # Record what actually happened this turn as scratchpad notes -
+            # only the messages the agent added THIS turn. response
+            # includes the full history again, so slicing off
+            # augmented_context avoids re-adding old tool calls as
+            # duplicate notes on every subsequent turn.
+            new_messages = response["messages"][len(augmented_context):]
+            for msg in new_messages:
+                tool_name = getattr(msg, "name", None)
+                if tool_name:
+                    scratchpad.add_note(f"Tool call: {tool_name}")
+
             print("\nAssistant:")
             print(response["messages"][-1].content)
 
-            conversation = response["messages"]
+            print("\n[scratchpad state]", scratchpad.get_state())
 
-            # [NOTIFICATIONS] React only if the server actually pushed a
-            # change (tools_ref["dirty"]), not on a fixed poll interval.
+            # The injected "[Internal Scratchpad State]" SystemMessage is a
+            # per-turn snapshot, not part of the real conversation - if we
+            # store it in `memory` it gets treated like any other chat
+            # message by the pruning strategies and piles up stale copies
+            # of the scratchpad every turn. Strip it before persisting.
+            SCRATCHPAD_MARKER = "[Internal Scratchpad State]"
+            persisted_messages = [
+                m for m in response["messages"]
+                if SCRATCHPAD_MARKER not in (
+                    m.get("content", "") if isinstance(m, dict)
+                    else str(getattr(m, "content", ""))
+                )
+            ]
+            memory.replace_messages(persisted_messages)
+            scratchpad.set_current_step("Waiting for next request")
+
+            # [NOTIFICATIONS] React only if the server actually pushed a change
             if tools_ref["dirty"]:
                 mcp_tools = await session.list_tools()
                 tools = [convert_mcp_tool(session, t) for t in mcp_tools.tools]
