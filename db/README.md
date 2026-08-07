@@ -63,4 +63,49 @@ erDiagram
     string notes
     string timestamp
   }
+
+  WIRE_TRANSFERS ||--o{ EPISODIC_MEMORY : promoted_from
+  CUSTOMERS ||--o{ EPISODIC_MEMORY : concerns
+  EMPLOYEES ||--o{ EPISODIC_MEMORY : involves
+  EPISODIC_MEMORY ||--o{ PROMOTE_OR_DROP_LOG : linked_to
+  EPISODIC_MEMORY ||--o{ SEMANTIC_MEMORY : source_of
+  SEMANTIC_MEMORY ||--o| SEMANTIC_MEMORY : superseded_by
+
+  EPISODIC_MEMORY {
+    int episode_id PK
+    string event_type
+    int transfer_id FK
+    int customer_id FK
+    int employee_id FK
+    string flags
+    string decision
+    int reviewer_id FK
+    string summary
+    string promoted_at
+    string promotion_reason
+    int consolidated
+  }
+  PROMOTE_OR_DROP_LOG {
+    int log_id PK
+    string message_excerpt
+    string decision
+    string reason
+    string timestamp
+    int linked_episode_id FK
+  }
+  SEMANTIC_MEMORY {
+    int fact_id PK
+    string entity_type
+    int entity_id
+    string fact_key
+    string fact_value
+    int version
+    string valid_from
+    string valid_to
+    string status
+    string source_episode_ids
+    int superseded_by FK
+    string contradiction_note
+    string created_at
+  }
 ```
