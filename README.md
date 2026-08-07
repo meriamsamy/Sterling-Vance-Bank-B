@@ -2,13 +2,40 @@
 
 ## Problem Statement
 
+Sterling & Vance Bank B initially had an MCP-based banking assistant that could handle accounts and wire transfers with fraud and compliance checks. However, the system had no long-term memory, so important events from previous sessions were lost. For example, if an account was previously identified as high-risk or required a freeze, the agent could not remember this in a later session and would treat the case as new.
+
+The system also lacked a reliable, grounded source for the bank's compliance policies, making it difficult to consistently answer questions about sanctions, fraud, human approval, and account freezing.
+
+To address these gaps, we extended the system with  **long-term memory, RAG, and context management** , allowing the agent to preserve important banking events, retrieve relevant official policies, and use previous knowledge when handling new requests.
+
 ---
 
 ## System Architecture
 
 ---
 
+
 ## How To Run
+
+1. Install the required dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+2. Add the Groq API key to `.env`:
+
+```env
+API_KEY=your_groq_api_key
+```
+
+3. Run the client:
+
+```bash
+python client/client.py
+```
+
+The client automatically starts the MCP server and connects the agent to the available banking tools, memory, and RAG system.
 
 ---
 
