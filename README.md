@@ -14,6 +14,7 @@ To address these gaps, we extended the system with  **long-term memory, RAG, and
 
 ---
 
+## Memory
 
 ## How To Run
 
@@ -29,7 +30,19 @@ pip install -r requirements.txt
 API_KEY=your_groq_api_key
 ```
 
-3. Run the client:
+3. Create the Chroma vector database from the policy document:
+
+```bash
+python rag/vectors_managment.py
+```
+
+4. Initialize the memory tables:
+
+```bash
+python db/migrate_memory_tables.py
+```
+
+5. Run the client:
 
 ```bash
 python client/client.py
@@ -39,7 +52,7 @@ The client automatically starts the MCP server and connects the agent to the ava
 
 ---
 
-## Memory
+
 
 ### Short-term Memory:
 
