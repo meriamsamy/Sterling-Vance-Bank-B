@@ -14,8 +14,6 @@ To address these gaps, we extended the system with  **long-term memory, RAG, and
 
 ---
 
-## Memory
-
 ## How To Run
 
 1. Install the required dependencies:
@@ -53,6 +51,8 @@ The client automatically starts the MCP server and connects the agent to the ava
 ---
 
 
+
+## Memory
 
 ### Short-term Memory:
 
