@@ -124,11 +124,125 @@ and justification further down this README.
 
 ### Promote-or-Drop:
 
+**The real need:** not every message aging out of short-term memory is
+worth keeping. A routine "Wire #9999 of 500.00 approved" is noise a
+week later; a wire that got held or reviewed for sanctions/structuring
+is exactly the kind of event a compliance officer will ask about
+again. Something has to decide, per message, forget or promote - and
+log *why* - rather than either keeping everything (noisy) or dropping
+everything (issue #39's original problem).
+
+**Implementation:** `route_overflow(messages)` (`memory/episodic_memory/promote_or_drop_router.py`)
+takes exactly what `ShortTermMemory.overflow_candidates()` hands back
+and classifies each message against the *actual* strings
+`mcp/server.py`'s `wire_transfer()` returns as tool results:
+
+- `"Wire #{id} held (flags: {flags}). ..."` -> **promote**
+- `"Wire #{id} of {amount} approved after compliance review."` -> **promote**
+- `"Wire #{id} cancelled by human reviewer."` -> **promote**
+- `"Wire #{id} of {amount} approved."` (routine, unflagged) -> **forget**
+- anything else (non-wire, non-tool messages) -> **forget**
+
+Since those tool-result strings never carry `customer_id`/`employee_id`/
+`reviewer_id`, a promoted message triggers a read-only enrichment
+lookup (`_lookup_transfer_context`) against `wire_transfers` ->
+`accounts` -> `compliance_reviews` in the same `bank.db`, so the
+resulting episode is fully populated instead of a bare string.
+
+Every decision, forget or promote, is written to `promote_or_drop_log`
+with its reasoning - not just the ones that got promoted. **Hard
+boundary:** this router never writes to `semantic_memory`, only to
+`promote_or_drop_log` and, via `EpisodicMemory`, to `episodic_memory`.
+
+**Demo:** `python memory/episodic_memory/demo_promote_or_drop.py` runs
+one routine wire (forgotten), one non-tool message (forgotten), and
+one flagged/reviewed wire (promoted, enriched, logged) end-to-end
+against the real `bank.db`.
+
 ### Episodic Memory:
+
+**The real need (issue #39):** "the agent cannot remember previous
+fraud investigations or important banking events after the session is
+closed." Front-line staff shouldn't have to re-explain a customer's
+flag history every session, and the agent shouldn't have to re-scan
+raw `wire_transfers` rows to answer "has this customer been flagged
+before?" - it should recall a curated event, not re-derive it.
+
+**Implementation:** `EpisodicMemory` (`memory/episodic_memory/episodic_memory.py`)
+stores one row per promoted event in the `episodic_memory` table
+(`event_type`, `transfer_id`, `customer_id`, `employee_id`, `flags`,
+`decision`, `reviewer_id`, `summary`, `promoted_at`,
+`promotion_reason`, `consolidated`). Only ever written to by the
+promote-or-drop router above - this class has no opinion on what's
+worth keeping, it just persists and retrieves.
+
+Key methods: `store_episode(...)`, `get_episode(episode_id)`,
+`get_episodes_for_customer(customer_id)` (the real recall query),
+`get_recent_episodes(limit)`, and the consolidation-facing pair
+`get_unconsolidated_episodes()` / `mark_consolidated(episode_ids)`,
+which is the only channel through which semantic memory below ever
+learns anything happened - episodic memory itself never writes to
+`semantic_memory`.
 
 ### Semantic Memory:
 
+**The real need (issue #41):** a fact like a customer's risk level
+isn't static - it can be reinforced by a repeat flag, or contradicted
+by a later investigation that reaches a different conclusion than an
+earlier one. Overwriting it in place would silently erase what the
+bank used to believe and why. `customers.risk_level` already existed
+in the schema but nothing ever updated it - a real staleness problem,
+not an invented one.
+
+**Implementation:** `SemanticMemory` (`memory/semantic_memory/semantic_memory.py`)
+stores one row per **fact version** in `semantic_memory`
+(`entity_type`, `entity_id`, `fact_key`, `fact_value`, `version`,
+`valid_from`, `valid_to`, `status`, `source_episode_ids`,
+`superseded_by`, `contradiction_note`). Nothing is ever updated in
+place:
+
+- `insert_fact_version(...)` always appends a new version, never edits an existing row.
+- `supersede_fact(fact_id, superseded_by)` closes out the old active row (`valid_to`, `status='superseded'`, `superseded_by`) instead of deleting or overwriting it - full history stays queryable via `get_fact_history(...)`.
+- `expire_stale_facts(max_age_days=180)` marks facts nobody has reconfirmed as `'expired'` (a distinct status from `'superseded'` - one means "replaced by a newer fact," the other means "just went stale").
+
+Only ever written to by the consolidation pass below - never by the
+promote-or-drop router, per #40's hard boundary.
+
 ### Consolidation:
+
+**The real need:** semantic facts must never be written at message
+time - they need a separate pass that can look across *multiple*
+episodes for the same entity and decide whether they agree, reinforce
+each other, or genuinely conflict.
+
+**Implementation:** `run_consolidation()` (`memory/semantic_memory/consolidation.py`)
+is a standalone, periodic pass - triggered manually via
+`python memory/semantic_memory/run_consolidation.py`, never called by
+the router and never fired at write time. It pulls every
+unconsolidated episode (`EpisodicMemory.get_unconsolidated_episodes()`),
+groups them by customer, and for each one derives an implied
+`risk_level` via `derive_risk_level(flags, decision)`:
+
+- `sanctions` or `self_dealing` present -> `high`, regardless of decision
+- `structuring` only, decision cleared (`approved`/`cleared`) -> `medium`
+- `structuring` only, any other/unknown decision -> `high` (conservative default)
+
+That derived value is then reconciled against the customer's current
+active fact:
+
+1. **No active fact yet** -> insert the first version.
+2. **Same value as current** -> treated as a repeat-offender signal: severity is escalated one level (`_escalate`, capped at `high`), old version superseded, new version versioned with a note explaining the escalation.
+3. **Different value than current -> a real conflict.** The newer episode wins (resolved on recency of investigation, not insertion order); the old fact is superseded, not overwritten; `contradiction_note` records both episode ids and the reasoning.
+
+**A real contradiction, not a hypothetical one:** `python memory/semantic_memory/demo_consolidation.py`
+seeds two genuine wire transfers for the existing seeded customer
+Ahmed Ali (`customer_id=1`) *through the actual PR 3 router* (not
+hand-crafted rows) - a `structuring` wire cleared by compliance
+(-> derives `medium`), then a later `sanctions` wire (-> derives
+`high`). Consolidation resolves the disagreement: `medium` is
+superseded, `high` becomes the active fact, and the audit trail
+(`get_fact_history`) shows both versions with the contradiction
+explained rather than lost.
 
 ---
 
@@ -209,3 +323,9 @@ Therefore, **Hybrid RAG** provides the best balance between retrieval quality, e
 ---
 
 ## Demo
+Memory (issues #39–#41): `python memory/episodic_memory/demo_promote_or_drop.py`
+shows both outcomes of promote-or-drop firing and logging correctly;
+`python memory/semantic_memory/demo_consolidation.py` shows a real
+contradiction (two flags on the same customer implying different risk
+levels) being resolved by consolidation, versioned rather than
+overwritten.
