@@ -60,6 +60,8 @@ bm25_retriever.k = TOP_K
 def hybrid_rag(question):
 
     # ---------------- Metadata Filter ----------------
+    print("\n[HYBRID RAG TOOL] CALLED")
+    print("Question:", question)
 
     section_filter = extract_metadata_filter(question)
 
@@ -137,7 +139,9 @@ def hybrid_rag(question):
             "status": "NO_DOCUMENTS",
             "documents_used": 0,
             "iterations": 1,
-            "tokens": 0
+            "tokens": 0,
+            "context": "",
+            "documents": [],
         }
 
 
@@ -165,7 +169,9 @@ def hybrid_rag(question):
         "status": response["status"],
         "documents_used": len(combined_docs),
         "iterations": 1,
-        "tokens": response["tokens"]
+        "tokens": response["tokens"],
+        "context": context,
+        "documents": combined_docs,
     }
 
 
