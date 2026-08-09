@@ -123,6 +123,29 @@ class SemanticMemory:
         conn.commit()
         conn.close()
 
+    def get_all_active_facts(
+        self, entity_type: str, fact_key: str
+    ) -> List[sqlite3.Row]:
+        """
+        Return every active fact of this type/key across all entities.
+
+        Used by long-term memory retrieval so semantic memory can be
+        read on its own, independent of whatever episodic memory
+        currently holds - episodic and semantic are separate stores
+        and one being empty must never silently hide the other.
+        """
+        conn = get_conn()
+        rows = conn.execute(
+            """
+            SELECT * FROM semantic_memory
+            WHERE entity_type = ? AND fact_key = ? AND status = 'active'
+            ORDER BY entity_id
+            """,
+            (entity_type, fact_key),
+        ).fetchall()
+        conn.close()
+        return rows
+
     def expire_stale_facts(self, max_age_days: int = 180) -> List[int]:
         """
         Marks active facts older than max_age_days as 'expired' (not
