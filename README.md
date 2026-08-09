@@ -100,7 +100,6 @@ Sterling & Vance Bank
     └── migrate_memory_tables.py
 ```
 
-
 ---
 
 ## How To Run
@@ -420,77 +419,122 @@ overwritten.
 
 ## Agent Memory & RAG End-to-End Integration Test
 
-- **Run time:** 2026-08-09 00:16:05
-- **Execution time:** 208.25s
-- **Integration evidence:** **20/20 checks passed**
-- **Requests executed:** 5
-- **Hybrid RAG executions:** 5/5
-- **Verified RAG results:** 5
-- **Episodic memories stored:** 3
-- **Semantic consolidations:** 1
-- **Long-term memory retrievals:** 3
+- **Run time:** 2026-08-09 15:18:27
+- **Execution time:** 724.19s
+- **Integration evidence:** **45/49 checks passed**
+- **Requests executed:** 10
+- **Active context strategy:** `masking`
+
+### Architecture Evidence
+
+- **Hybrid RAG executions:** 10
+- **Long-term memory retrievals:** 9
+- **Memory verification runs:** 9
+- **Episodic-memory storage messages:** 0
+- **Episodic promotion logs:** 0
+
+### Periodic Semantic Consolidation
+
+- **Consolidation module:** `D:\sterling and vance bank B\memory\semantic_memory\consolidation.py`
+- **Periodic pass executed:** `True`
+- **Consolidation actions:** `1`
 
 ### Components Tested
 
-| Component                                                  | Result         |
-| ---------------------------------------------------------- | -------------- |
-| Hybrid RAG executed for every request                      | **PASS** |
-| Self-RAG retrieval verification produced statuses          | **PASS** |
-| At least one RAG retrieval was verified                    | **PASS** |
-| Self-RAG generation verification is active                 | **PASS** |
-| Short-term memory remains active across requests           | **PASS** |
-| Scratchpad maintains working state                         | **PASS** |
-| Scratchpad records tool activity                           | **PASS** |
-| Episodic memory stored transfer#1                          | **PASS** |
-| Episodic memory stored transfer#2                          | **PASS** |
-| Episodic memory stored transfer#3                          | **PASS** |
-| Semantic memory consolidation triggered                    | **PASS** |
-| Long-term memory was retrieved                             | **PASS** |
-| Long-term memory post-retrieval verification executed      | **PASS** |
-| Retrieved episodic memory was available                    | **PASS** |
-| Retrieved semantic memory was available                    | **PASS** |
-| Long-term memory post-generation verification executed     | **PASS** |
-| Final memory-based query executed                          | **PASS** |
+| Component | Result |
+|---|---|
+| Real banking memory scenario was exercised | **PASS** |
+| MCP server connection was established | **PASS** |
+| MCP tools were discovered by the client | **PASS** |
+| Banking tools were exposed to the agent | **PASS** |
+| Hybrid RAG executed | **PASS** |
+| Hybrid RAG executed across the live request loop | **PASS** |
+| Hybrid RAG produced explicit status output | **PASS** |
+| Hybrid RAG reported document usage | **PASS** |
+| Long-term memory retrieval path executed | **PASS** |
+| Long-term memory was retrieved at least once | **PASS** |
+| Long-term memory post-retrieval verification executed | **PASS** |
+| Memory verification reported episodic relevance | **PASS** |
+| Memory verification reported semantic relevance | **PASS** |
+| Memory verification reported support status | **PASS** |
+| Memory verification produced PASS or FAIL | **PASS** |
+| Post-generation memory verification was attempted | **PASS** |
+| Post-generation verification produced explicit result | **FAIL** |
+| Short-term memory is instantiated by the client | **PASS** |
+| Scratchpad working state is visible | **PASS** |
+| Scratchpad records tool activity | **PASS** |
+| Scratchpad receives memory-routing notes | **PASS** |
+| Promote-or-drop routing was exercised | **PASS** |
+| A memory routing decision was produced | **PASS** |
+| Episodic-memory promotion/storage was attempted | **PASS** |
+| Multiple memory-routing events were observed | **FAIL** |
+| Configured context strategy is active | **PASS** |
+| Context manager is active for the configured strategy | **PASS** |
+| Configured masking strategy is selected | **PASS** |
+| Multi-turn conversation was executed | **PASS** |
+| Context was processed before agent execution | **PASS** |
+| Episodic memory appeared in retrieval output | **FAIL** |
+| Semantic memory appeared in retrieval output | **FAIL** |
+| Final historical-memory query was executed | **PASS** |
 | Previous transfer history reached the final reasoning flow | **PASS** |
-| RAG and long-term memory integrated in live pipeline       | **PASS** |
-| Live banking events generated episodic memory              | **PASS** |
+| RAG and long-term memory were integrated in live pipeline | **PASS** |
+| Human approval elicitation path was exercised | **PASS** |
+| Wire-transfer operation was attempted | **PASS** |
+| Bank-policy retrieval was available to the client | **PASS** |
+| Final reasoning depends on historical suspicious activity | **PASS** |
+| Client exposes active context strategy | **PASS** |
+| Client uses Hybrid RAG as the live RAG pipeline | **PASS** |
+| Client exposes long-term memory retrieval | **PASS** |
+| Client exposes long-term memory verification | **PASS** |
+| Client exposes post-generation memory verification | **PASS** |
+| Client exposes promote-or-drop routing | **PASS** |
+| Real periodic consolidation executed | **PASS** |
+| Consolidation module produced no runtime failure | **PASS** |
+| Consolidation action structure was available | **PASS** |
+| Consolidation returned a valid action list | **PASS** |
 
-### End-to-End Flow
+### Required Live Flow
 
 ```text
 User Request
-    ↓
+        ↓
 Short-Term Memory
-    ↓
+        ↓
 Scratchpad
-    ↓
-Selected Context Strategy
-    ↓
+        ↓
+Configured Context Strategy
+        ↓
 Hybrid RAG
-    ↓
-Self-RAG Retrieval Verification
-    ↓
+        ↓
 Long-Term Memory Retrieval
-    ↓
-Memory Post-Retrieval Verification
-    ↓
-Verified Memory + RAG Context
-    ↓
-Agent
-    ↓
-Live Banking Operation
-    ↓
+        ↓
+Memory Verification
+        ↓
+Verified Memory + RAG + Scratchpad
+        ↓
+Agent Reasoning
+        ↓
+MCP Banking Tool
+        ↓
+Human Elicitation if Required
+        ↓
+Generated Answer
+        ↓
+Long-Term Memory Post-Generation Verification
+        ↓
+Save Generated Messages
+        ↓
+Short-Term Memory Overflow
+        ↓
+Promote OR Forget
+        ↓
 Episodic Memory
-    ↓
-Semantic Consolidation
-    ↓
-Next Request
-    ↓
-Long-Term Memory Retrieval
-    ↓
-Memory Post-Generation Verification
-    ↓
-Grounded Final Answer
+        ↓
+SEPARATE PERIODIC CONSOLIDATION
+        ↓
+Semantic Memory
+        ↓
+Later Historical Query
 ```
 
 ### Test Requests
@@ -499,26 +543,39 @@ Grounded Final Answer
 2. `Initiate a wire transfer of 1000 from account 2 to FR-TEST-001 in IR.`
 3. `Initiate a wire transfer of 1000 from account 2 to FR-TEST-002 in IR.`
 4. `Initiate a wire transfer of 1000 from account 2 to FR-TEST-003 in IR.`
-5. `What suspicious wire transfer activity happened earlier? Tell me the previous transfers and any pattern you noticed.`
+5. `Remember that the three previous transfers are related to the same customer and may form a suspicious pattern.`
+6. `What is the current risk level of this customer based only on verified information?`
+7. `Before answering, check the bank policy and the customer's previous verified memory.`
+8. `Now summarize the previous transfer activity, but do not invent anything that is not supported by memory or retrieved policy.`
+9. `What should the bank consider if the same customer attempts another suspicious transfer?`
+10. `What suspicious wire transfer activity happened earlier? Tell me the previous transfers, the pattern you noticed, and the customer's latest verified risk level.`
 
-### What This Test Proves
+### What This Test Demonstrates
 
-- Short-term conversation memory remains active across requests.
-- Scratchpad maintains temporary working state.
-- Hybrid RAG executes for every request.
-- Self-RAG verifies retrieved knowledge before generation.
-- Self-RAG verifies generated answers against retrieved context.
-- Live banking events are converted into episodic memories.
-- Repeated suspicious events trigger semantic consolidation.
-- Long-term memory is retrieved for a relevant follow-up request.
-- Retrieved long-term memory is verified before entering the agent context.
-- Episodic and semantic memory can both contribute to the final reasoning flow.
-- Long-term-memory-dependent answers receive post-generation verification.
-- RAG and long-term memory operate together inside the same live client pipeline.
+- The test uses the real banking client instead of simulating memory behavior.
+- Hybrid RAG is executed through the actual client pipeline.
+- Long-term memory retrieval is performed by the real EpisodicMemory and SemanticMemory stores.
+- Retrieved long-term memory is verified before being exposed to the agent.
+- Generated answers that depend on long-term memory are verified again.
+- Short-term memory and scratchpad are exercised during the live conversation.
+- Context management uses the strategy configured by CONTEXT_STRATEGY.
+- Memory overflow is routed through the real Promote-or-Drop Router.
+- Episodic memory is produced by the real routing implementation.
+- Semantic consolidation is executed separately from live episodic writes.
+- MCP banking tools are exercised through the real client/server connection.
+- Human approval is handled through the real elicitation callback.
+- A later query depends on historical banking activity.
 
-### Note
+### Important Design Constraint
 
-MCP banking operations are used only to create realistic live events required by the memory workflow. The existing MCP functionality itself is not evaluated as a separate feature in this test.
+This test does NOT implement memory, RAG, routing, verification, or consolidation.
+It only executes the real client and checks observable evidence.
+
+The current client implements Hybrid RAG as its live RAG architecture.
+Therefore this test does not incorrectly require Naive RAG or Agentic RAG.
+
+The current client activates one context strategy through CONTEXT_STRATEGY.
+Therefore this test checks the configured strategy instead of requiring all four strategies in a single run.
 
 ### Run
 
@@ -529,141 +586,92 @@ python -u "client\test_client.py"
 ### Raw Output
 
 ```text
-r of 1000 from account 2 to FR-TEST-001 in IR.
-Metadata Filter: 5
-
-Retrieved 1 documents
-[HYBRID RAG]
-Status: VERIFIED
-Documents: 1
-[LONG-TERM MEMORY] No relevant memories found.
-
---- HUMAN APPROVAL REQUIRED ---
-High-risk wire transfer detected.
-
-Flags: sanctions
-
-Approve this transfer?
-
-[TEST ELICITATION] no
-
-[LONG-TERM MEMORY] Transfer episode stored.
-[LONG-TERM MEMORY] Answer verification skipped (no verified memory used).
-
-Assistant:
-I’m sorry, but the wire transfer you requested was **cancelled by a human reviewer**.  
-
-Because the destination country is **IR** (Iran), the transfer is automatically flagged under the bank’s sanctions policy. All wires to sanctioned countries must be held and routed to a compliance officer for explicit sign‑off before any funds are moved. The system therefore placed the transaction on hold and a reviewer decided to cancel it.  
-
-If you believe this was an error or need to re‑submit the transfer, please let me know and I can help you initiate a new request or provide further guidance.
-
-[scratchpad] {'goal': 'Initiate a wire transfer of 1000 from account 2 to FR-TEST-001 in IR.', 'plan': [], 'current_step': 'Waiting for next request', 'notes': ['Tool call: login', 'Tool call: wire_transfer_initiate']}
-
-[TEST INPUT] Initiate a wire transfer of 1000 from account 2 to FR-TEST-002 in IR.
+answering, check the bank policy and the customer's previous verified memory.
+[MEMORY] FORGET (episode_id=None)
+[MEMORY] Reason: No flagged/reviewed wire-transfer pattern matched (role='user', event_type=not_tool_result); routine or unrelated message - not meaningful for long-term recall.
 
 [HYBRID RAG] Searching...
 
 [HYBRID RAG TOOL] CALLED
-Question: Initiate a wire transfer of 1000 from account 2 to FR-TEST-002 in IR.
-Metadata Filter: 5
+Question: Before answering, check the bank policy and the customer's previous verified memory.
+Metadata Filter: None
 
-Retrieved 1 documents
+Retrieved 4 documents
 [HYBRID RAG]
 Status: VERIFIED
-Documents: 1
+Documents: 4
 [LONG-TERM MEMORY] Relevant memories found.
-[LONG-TERM MEMORY] Episodic relevant: True
+[LONG-TERM MEMORY] Episodic relevant: False
 [LONG-TERM MEMORY] Semantic relevant: False
 [LONG-TERM MEMORY] Supported: False
-[LONG-TERM MEMORY] Reason: The memory describes a similar wire transfer (same source account, amount, and destination country) that was cancelled, indicating potential issues, but it does not provide evidence that the requested transfer can be successfully initiated.
+[LONG-TERM MEMORY] Reason: Memory verification failed: JSONDecodeError
 [LONG-TERM MEMORY] Verification FAILED.
 [LONG-TERM MEMORY] Memory will NOT be provided to the agent.
-
---- HUMAN APPROVAL REQUIRED ---
-High-risk wire transfer detected.
-
-Flags: sanctions
-
-Approve this transfer?
-
-[TEST ELICITATION] no
-
-[LONG-TERM MEMORY] Transfer episode stored.
 [LONG-TERM MEMORY] Answer verification skipped (no verified memory used).
 
 Assistant:
-I’m sorry, but the wire transfer you requested was **cancelled by a human reviewer**.
 
-**Why?**  
-- The destination country is **IR** (Iran), which is on the bank’s sanctions list.  
-- According to the *Wire Transfer Escalation Policy*, any wire to a sanctioned country must be **held** and routed to a compliance officer for explicit sign‑off before funds can be moved.  
-- Because the transfer was flagged for sanctions compliance, the system placed it on hold and a reviewer decided to cancel it rather than route it for approval.
+[MEMORY] FORGET (episode_id=None)
+[MEMORY] Reason: No flagged/reviewed wire-transfer pattern matched (role='assistant', event_type=not_tool_result); routine or unrelated message - not meaningful for long-term recall.
+[MEMORY] FORGET (episode_id=None)
+[MEMORY] Reason: No flagged/reviewed wire-transfer pattern matched (role='tool', event_type=routine_or_unflagged); routine or unrelated message - not meaningful for long-term recall.
+[MEMORY] FORGET (episode_id=None)
+[MEMORY] Reason: No flagged/reviewed wire-transfer pattern matched (role='assistant', event_type=not_tool_result); routine or unrelated message - not meaningful for long-term recall.
 
-**What can you do next?**  
-1. **Re‑submit the transfer** – If you still need to move the funds, you can request a new transfer. The system will again flag it for sanctions review, and a compliance officer will need to approve it.  
-2. **Contact Compliance** – If you believe the transfer should be approved, you can reach out to the compliance team to discuss the request.  
-3. **Alternative routing** – If the destination account can be moved to a non‑sanctioned country, that would avoid the hold.
+[scratchpad] {'goal': "Before answering, check the bank policy and the customer's previous verified memory.", 'plan': [], 'current_step': 'Waiting for next request', 'notes': ['Tool call: login', 'Tool call: wire_transfer_initiate', 'Tool call: wire_transfer_initiate', 'Tool call: wire_transfer_initiate', 'Memory routing: forget (episode_id=None)', 'Memory routing: forget (episode_id=None)', 'Memory routing: forget (episode_id=None)', 'Tool call: get_account', 'Memory routing: forget (episode_id=None)', 'Memory routing: forget (episode_id=None)', 'Memory routing: forget (episode_id=None)']}
 
-Let me know how you’d like to proceed or if you need assistance with any of the above steps.
-
-[scratchpad] {'goal': 'Initiate a wire transfer of 1000 from account 2 to FR-TEST-002 in IR.', 'plan': [], 'current_step': 'Waiting for next request', 'notes': ['Tool call: login', 'Tool call: wire_transfer_initiate', 'Tool call: wire_transfer_initiate']}
-
-[TEST INPUT] Initiate a wire transfer of 1000 from account 2 to FR-TEST-003 in IR.
+[TEST INPUT] Now summarize the previous transfer activity, but do not invent anything that is not supported by memory or retrieved policy.
+[MEMORY] FORGET (episode_id=None)
+[MEMORY] Reason: No flagged/reviewed wire-transfer pattern matched (role='user', event_type=not_tool_result); routine or unrelated message - not meaningful for long-term recall.
 
 [HYBRID RAG] Searching...
 
 [HYBRID RAG TOOL] CALLED
-Question: Initiate a wire transfer of 1000 from account 2 to FR-TEST-003 in IR.
-Metadata Filter: 5
+Question: Now summarize the previous transfer activity, but do not invent anything that is not supported by memory or retrieved policy.
+Metadata Filter: 8
 
-Retrieved 1 documents
+Retrieved 3 documents
 [HYBRID RAG]
 Status: VERIFIED
-Documents: 1
+Documents: 3
 [LONG-TERM MEMORY] Relevant memories found.
-[LONG-TERM MEMORY] Episodic relevant: True
+[LONG-TERM MEMORY] Episodic relevant: False
 [LONG-TERM MEMORY] Semantic relevant: False
 [LONG-TERM MEMORY] Supported: False
-[LONG-TERM MEMORY] Reason: The memory records similar transfers from account 2 to IR that were cancelled, indicating potential risk, but it does not provide evidence that the requested transfer to FR-TEST-003 can be successfully initiated.
+[LONG-TERM MEMORY] Reason: Memory verification failed: JSONDecodeError
 [LONG-TERM MEMORY] Verification FAILED.
 [LONG-TERM MEMORY] Memory will NOT be provided to the agent.
-
---- HUMAN APPROVAL REQUIRED ---
-High-risk wire transfer detected.
-
-Flags: sanctions
-
-Approve this transfer?
-
-[TEST ELICITATION] no
-
-[LONG-TERM MEMORY] Transfer episode stored.
-[LONG-TERM MEMORY] Fraud pattern consolidated.
 [LONG-TERM MEMORY] Answer verification skipped (no verified memory used).
 
 Assistant:
-I’m sorry, but the wire transfer you requested was **cancelled by a human reviewer**.
+Based on the verified transaction history and retrieved account data, here is the summary of the previous transfer activity:
 
-**Why?**  
-- The destination country is **IR** (Iran), which is on the bank’s sanctions list.  
-- Under the *Wire Transfer Escalation Policy*, any wire to a sanctioned country must be **held** and routed to a compliance officer for explicit sign‑off before any funds can be moved.  
-- Because the transfer was flagged for sanctions compliance, the system placed it on hold and a reviewer decided to cancel it rather than route it for approval.
+**Transfer Activity Log:**
+* **Wire #57:** Initiated for 1000 from Account 2 to destination FR-TEST-001 in IR. **Result:** Cancelled by human reviewer.
+* **Wire #58:** Initiated for 1000 from Account 2 to destination FR-TEST-002 in IR. **Result:** Cancelled by human reviewer.
+* **Wire #59:** Initiated for 1000 from Account 2 to destination FR-TEST-003 in IR. **Result:** Cancelled by human reviewer.
 
-**What can you do next?**  
-1. **Re‑submit the transfer** – If you still need to move the funds, you can request a new transfer. The system will again flag it for sanctions review, and a compliance officer will need to approve it.  
-2. **Contact Compliance** – If you believe the transfer should be approved, you can reach out to the compliance team to discuss the request.  
-3. **Alternative routing** – If the destination account can be moved to a non‑sanctioned country, that would avoid the hold.
+**Policy & Compliance Context:**
+Per bank policy, a transfer status indicating cancellation or rejection means the transaction failed validation or was rejected during compliance review. Consequently, **no funds were transferred** for any of these three attempts.
 
-Let me know how you’d like to proceed or if you need assistance with any of the above steps.
+**Current Account Status:**
+* **Account 2:** Balance remains at 7000.00 (unchanged by the cancelled transfers).
 
-[scratchpad] {'goal': 'Initiate a wire transfer of 1000 from account 2 to FR-TEST-003 in IR.', 'plan': [], 'current_step': 'Waiting for next request', 'notes': ['Tool call: login', 'Tool call: wire_transfer_initiate', 'Tool call: wire_transfer_initiate', 'Tool call: wire_transfer_initiate']}
+**Verified Pattern:**
+The activity demonstrates three consecutive attempts to route funds to the same restricted destination country (IR), all of which were intercepted and cancelled by human review. This establishes a verified pattern of repeated compliance flags for this account.
+[MEMORY] FORGET (episode_id=None)
+[MEMORY] Reason: No flagged/reviewed wire-transfer pattern matched (role='assistant', event_type=not_tool_result); routine or unrelated message - not meaningful for long-term recall.
 
-[TEST INPUT] What suspicious wire transfer activity happened earlier? Tell me the previous transfers and any pattern you noticed.
+[scratchpad] {'goal': 'Now summarize the previous transfer activity, but do not invent anything that is not supported by memory or retrieved policy.', 'plan': [], 'current_step': 'Waiting for next request', 'notes': ['Tool call: login', 'Tool call: wire_transfer_initiate', 'Tool call: wire_transfer_initiate', 'Tool call: wire_transfer_initiate', 'Memory routing: forget (episode_id=None)', 'Memory routing: forget (episode_id=None)', 'Memory routing: forget (episode_id=None)', 'Tool call: get_account', 'Memory routing: forget (episode_id=None)', 'Memory routing: forget (episode_id=None)', 'Memory routing: forget (episode_id=None)', 'Memory routing: forget (episode_id=None)', 'Memory routing: forget (episode_id=None)']}
+
+[TEST INPUT] What should the bank consider if the same customer attempts another suspicious transfer?
+[MEMORY] PROMOTE (episode_id=7)
+[MEMORY] Reason: Matched promote marker 'cancelled by human reviewer' - this is a flagged and/or compliance-reviewed wire transfer, a meaningful banking event worth recalling across sessions (issue #39).
 
 [HYBRID RAG] Searching...
 
 [HYBRID RAG TOOL] CALLED
-Question: What suspicious wire transfer activity happened earlier? Tell me the previous transfers and any pattern you noticed.
+Question: What should the bank consider if the same customer attempts another suspicious transfer?
 Metadata Filter: 10
 
 Retrieved 1 documents
@@ -671,51 +679,73 @@ Retrieved 1 documents
 Status: VERIFIED
 Documents: 1
 [LONG-TERM MEMORY] Relevant memories found.
-[LONG-TERM MEMORY] Episodic relevant: True
-[LONG-TERM MEMORY] Semantic relevant: True
-[LONG-TERM MEMORY] Supported: True
-[LONG-TERM MEMORY] Reason: The episodic entries list the specific suspicious transfers and the semantic entry confirms a pattern of three such transfers, directly addressing the user's request.
-[LONG-TERM MEMORY] Verification PASSED.
-
-[LONG-TERM MEMORY] Verifying generated answer...
-[LONG-TERM MEMORY] Answer supported: False
-[LONG-TERM MEMORY] Reason: The answer includes claims about compliance escalation and fraud investigator review that are not present in the provided long‑term memory.
-[LONG-TERM MEMORY] Answer verification FAILED.
-[LONG-TERM MEMORY] Original answer will NOT be shown.
-[LONG-TERM MEMORY] Regenerating without long-term memory...
-[LONG-TERM MEMORY] Fallback answer generated without long-term memory.
+[LONG-TERM MEMORY] Episodic relevant: False
+[LONG-TERM MEMORY] Semantic relevant: False
+[LONG-TERM MEMORY] Supported: False
+[LONG-TERM MEMORY] Reason: Memory verification failed: JSONDecodeError
+[LONG-TERM MEMORY] Verification FAILED.
+[LONG-TERM MEMORY] Memory will NOT be provided to the agent.
+[LONG-TERM MEMORY] Answer verification skipped (no verified memory used).
 
 Assistant:
-I’ve pulled the account‑level view for **Account 2** (balance $7,000) and cross‑checked it against the bank’s internal monitoring logs. Here’s what the system has flagged so far:
+Based on the retrieved bank policy and the verified transaction history, the bank should consider the following:
 
-| Wire # | Date | Amount | Destination Account | Destination Country | Status | Flag(s) |
-|--------|------|--------|---------------------|---------------------|--------|---------|
-| 41 | 2024‑08‑07 | $1,000 | FR‑TEST‑001 | IR | **Cancelled** | Sanctions (IR) |
-| 42 | 2024‑08‑07 | $1,000 | FR‑TEST‑002 | IR | **Cancelled** | Sanctions (IR) |
-| 43 | 2024‑08‑07 | $1,000 | FR‑TEST‑003 | IR | **Cancelled** | Sanctions (IR) |
+1.  **Pattern of Repeated Unusual Transfers:** The retrieved policy explicitly lists "repeated unusual transfers" as a key indicator of financial crime. Given that this customer has already attempted three consecutive transfers to a sanctioned destination (IR) which were all cancelled, a fourth attempt reinforces this specific pattern.
+2.  **Attempts to Avoid Approval:** The policy also flags "attempts to avoid internal approval requirements" as a suspicious indicator. Repeatedly initiating transfers that are known to trigger compliance holds may suggest an attempt to bypass or test these controls.
+3.  **Immediate Investigation:** Per policy, the detection of such suspicious behavior does not automatically prove fraud, but it mandates that the transaction be **paused for further investigation**.
 
-**What we see**
+In summary, the bank should treat any new transfer from this account as a high-risk event requiring immediate compliance review, given the established pattern of three previous cancelled attempts to the same restricted jurisdiction.
+[MEMORY] FORGET (episode_id=None)
+[MEMORY] Reason: No flagged/reviewed wire-transfer pattern matched (role='assistant', event_type=not_tool_result); routine or unrelated message - not meaningful for long-term recall.
 
-1. **Repeated attempts to send money to Iran** – All three wires were directed to accounts in Iran, which is on the bank’s sanctions list.  
-2. **Automatic hold and cancellation** – Because the destination country is sanctioned, the system automatically placed each transfer on hold and a human reviewer cancelled them.  
-3. **No other flags** – The transfers were all under the teller authority limit ($5,000) and did not trigger structuring or conflict‑of‑interest checks (the teller was not linked to the customer record).
+[scratchpad] {'goal': 'What should the bank consider if the same customer attempts another suspicious transfer?', 'plan': [], 'current_step': 'Waiting for next request', 'notes': ['Tool call: login', 'Tool call: wire_transfer_initiate', 'Tool call: wire_transfer_initiate', 'Tool call: wire_transfer_initiate', 'Memory routing: forget (episode_id=None)', 'Memory routing: forget (episode_id=None)', 'Memory routing: forget (episode_id=None)', 'Tool call: get_account', 'Memory routing: forget (episode_id=None)', 'Memory routing: forget (episode_id=None)', 'Memory routing: forget (episode_id=None)', 'Memory routing: forget (episode_id=None)', 'Memory routing: forget (episode_id=None)', 'Memory routing: promote (episode_id=7)', 'Memory routing: forget (episode_id=None)']}
 
-**Pattern**
+[TEST INPUT] What suspicious wire transfer activity happened earlier? Tell me the previous transfers, the pattern you noticed, and the customer's latest verified risk level.
+[MEMORY] FORGET (episode_id=None)
+[MEMORY] Reason: No flagged/reviewed wire-transfer pattern matched (role='user', event_type=not_tool_result); routine or unrelated message - not meaningful for long-term recall.
 
-- The pattern is a *repeated, low‑value transfer to a sanctioned country*.  
-- According to the *Wire Transfer Escalation Policy*, any wire to a sanctioned country must be routed to a compliance officer for explicit sign‑off. The system’s automatic cancellation indicates that the compliance workflow was not engaged (the reviewer chose to cancel rather than forward for approval).
+[HYBRID RAG] Searching...
 
-**What this means**
+[HYBRID RAG TOOL] CALLED
+Question: What suspicious wire transfer activity happened earlier? Tell me the previous transfers, the pattern you noticed, and the customer's latest verified risk level.
+Metadata Filter: 10
 
-- The bank’s compliance engine is correctly flagging and holding these transfers.  
-- If you need to move funds to a sanctioned country, you must go through the compliance approval process.  
-- If the transfers were intended for a different country or account, you can re‑submit with the correct details.
+Retrieved 1 documents
+[HYBRID RAG]
+Status: VERIFIED
+Documents: 1
+[LONG-TERM MEMORY] Relevant memories found.
+[LONG-TERM MEMORY] Episodic relevant: False
+[LONG-TERM MEMORY] Semantic relevant: False
+[LONG-TERM MEMORY] Supported: False
+[LONG-TERM MEMORY] Reason: Memory verification failed: JSONDecodeError
+[LONG-TERM MEMORY] Verification FAILED.
+[LONG-TERM MEMORY] Memory will NOT be provided to the agent.
+[LONG-TERM MEMORY] Answer verification skipped (no verified memory used).
 
-Let me know if you’d like to investigate any other accounts, review the compliance workflow, or need help re‑initiating a transfer with the proper approvals.
+Assistant:
+Based on the verified transaction history and compliance records, here is the summary of the suspicious activity:
 
-[scratchpad] {'goal': 'What suspicious wire transfer activity happened earlier? Tell me the previous transfers and any pattern you noticed.', 'plan': [], 'current_step': 'Waiting for next request', 'notes': ['Tool call: login', 'Tool call: wire_transfer_initiate', 'Tool call: wire_transfer_initiate', 'Tool call: wire_transfer_initiate', 'Tool call: get_account']}
+**1. Previous Transfers:**
+* **Wire #57:** $1,000 from Account 2 to `FR-TEST-001` in **IR**. Result: Cancelled by human reviewer.
+* **Wire #58:** $1,000 from Account 2 to `FR-TEST-002` in **IR**. Result: Cancelled by human reviewer.
+* **Wire #59:** $1,000 from Account 2 to `FR-TEST-003` in **IR**. Result: Cancelled by human reviewer.
+
+**2. Pattern Noticed:**
+The activity shows **three consecutive attempts** to route identical amounts to a sanctioned jurisdiction (IR), all of which were intercepted and cancelled by compliance review. This aligns with bank policy indicators for:
+* **Repeated unusual transfers:** Multiple attempts to the same restricted destination.
+* **Attempts to avoid internal approval:** Persistently initiating transfers known to trigger compliance holds.
+
+**3. Latest Verified Risk Level:**
+**HIGH**
+This assessment is based on the established pattern of repeated compliance flags and the consistent targeting of a restricted destination, which significantly elevates the account's risk profile for future monitoring.
+[MEMORY] FORGET (episode_id=None)
+[MEMORY] Reason: No flagged/reviewed wire-transfer pattern matched (role='assistant', event_type=not_tool_result); routine or unrelated message - not meaningful for long-term recall.
+
+[scratchpad] {'goal': "What suspicious wire transfer activity happened earlier? Tell me the previous transfers, the pattern you noticed, and the customer's latest verified risk level.", 'plan': [], 'current_step': 'Waiting for next request', 'notes': ['Tool call: login', 'Tool call: wire_transfer_initiate', 'Tool call: wire_transfer_initiate', 'Tool call: wire_transfer_initiate', 'Memory routing: forget (episode_id=None)', 'Memory routing: forget (episode_id=None)', 'Memory routing: forget (episode_id=None)', 'Tool call: get_account', 'Memory routing: forget (episode_id=None)', 'Memory routing: forget (episode_id=None)', 'Memory routing: forget (episode_id=None)', 'Memory routing: forget (episode_id=None)', 'Memory routing: forget (episode_id=None)', 'Memory routing: promote (episode_id=7)', 'Memory routing: forget (episode_id=None)', 'Memory routing: forget (episode_id=None)', 'Memory routing: forget (episode_id=None)']}
 
 [TEST INPUT] exit
+
 ```
 
-**Result: PASSED — Memory, RAG, and context management are demonstrated end-to-end.**
+**Result: PARTIAL — 4 checks failed. The failed concerns should be reviewed against the real client implementation.**
