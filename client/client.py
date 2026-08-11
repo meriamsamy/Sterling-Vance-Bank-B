@@ -24,8 +24,7 @@ from rag.hybrid_rag import hybrid_rag
 # CONFIGURATION
 # ============================================================
 
-ACTIVE_CONTEXT_STRATEGY = os.getenv("CONTEXT_STRATEGY", "zone")
-
+ACTIVE_CONTEXT_STRATEGY = os.getenv("CONTEXT_STRATEGY", "masking")
 # ============================================================
 # SYSTEM PROMPT
 # ============================================================
@@ -109,77 +108,107 @@ SCHEMAS = {
 
 # ============================================================
 # LONG-TERM MEMORY
+#
+# Real retrieval, backed by the actual EpisodicMemory / SemanticMemory
+# stores (db/bank.db, memory/episodic_memory/, memory/semantic_memory/)
+# instead of an in-process placeholder. Episodes are written only by
+# the Promote-or-Drop Router when short-term memory overflows (see
+# route_and_log below); semantic facts are written only by the
+# periodic consolidation pass (memory/semantic_memory/consolidation.py).
+# This function never writes to either store - it only reads.
 # ============================================================
 
-class IntegratedMemorySystem:
-    def __init__(self):
-        self.episodes = []
-        self.facts = {}
+_LONG_TERM_MEMORY_KEYWORDS = (
+    "transfer", "transaction", "fraud", "suspicious",
+    "history", "pattern", "previous", "last", "risk",
+)
 
-    def log_transfer(self, employee_id, source_account_id, amount, target_account, destination_country, result_text, is_suspicious=False):
-        episode = {
-            "type": "wire_transfer",
-            "employee_id": employee_id,
-            "source_account_id": source_account_id,
-            "amount": amount,
-            "target_account": target_account,
-            "destination_country": destination_country,
-            "result": result_text,
-            "is_suspicious": is_suspicious,
-            "timestamp": datetime.now().isoformat(),
-        }
-        self.episodes.append(episode)
-        print("\n[LONG-TERM MEMORY] Transfer episode stored.")
-        self.consolidate(employee_id)
 
-    def consolidate(self, employee_id):
-        transfers = [
-            episode for episode in self.episodes
-            if episode["employee_id"] == employee_id and episode["type"] == "wire_transfer"
-        ]
-        suspicious_count = sum(1 for transfer in transfers if transfer["is_suspicious"])
+def retrieve_long_term_memory(query: str) -> str:
+    """
+    Cheap keyword gate first (avoids a DB round-trip on requests that
+    have nothing to do with history/risk), then a real read against
+    both stores INDEPENDENTLY - episodic and semantic memory don't
+    gate each other, since a customer can have a consolidated
+    semantic risk_level fact with no recent episodes (or vice versa),
+    and either store being empty must never silently hide the other.
+    Whatever comes back still has to pass verify_long_term_memory()'s
+    Self-RAG-style check before it ever reaches the agent - this
+    function only retrieves, it does not decide relevance.
+    """
+    from memory.episodic_memory.episodic_memory import EpisodicMemory
+    from memory.semantic_memory.semantic_memory import SemanticMemory
 
-        if suspicious_count >= 3:
-            self.facts[f"employee_{employee_id}_fraud_pattern"] = {
-                "type": "fraud_pattern",
-                "employee_id": employee_id,
-                "suspicious_transfers": suspicious_count,
-                "timestamp": datetime.now().isoformat(),
-            }
-            print("[LONG-TERM MEMORY] Fraud pattern consolidated.")
+    query_lower = query.lower()
+    if not any(keyword in query_lower for keyword in _LONG_TERM_MEMORY_KEYWORDS):
+        return ""
 
-    def retrieve_relevant_memory(self, query):
-        query_lower = query.lower()
-        keywords = ["transfer", "transaction", "fraud", "suspicious", "history", "pattern", "previous", "last"]
+    episodic = EpisodicMemory()
+    semantic = SemanticMemory()
 
-        if not any(keyword in query_lower for keyword in keywords):
-            return ""
+    episodes = episodic.get_recent_episodes(limit=10)
+    facts = semantic.get_all_active_facts("customer", "risk_level")
 
-        relevant_episodes = self.episodes[-5:]
-        relevant_facts = list(self.facts.values())
+    if not episodes and not facts:
+        return ""
 
-        if not relevant_episodes and not relevant_facts:
-            return ""
+    memory_parts = []
 
-        memory_parts = []
+    if episodes:
+        memory_parts.append("Recent Episodic Memory:")
+        for episode in episodes:
+            memory_parts.append(
+                f"- Episode #{episode['episode_id']} ({episode['event_type']}): "
+                f"{episode['summary']}"
+            )
 
-        if relevant_episodes:
-            memory_parts.append("Recent Episodic Memory:")
-            for episode in relevant_episodes:
-                memory_parts.append(str(episode))
+    if facts:
+        memory_parts.append("\nConsolidated Semantic Memory:")
+        for fact in facts:
+            memory_parts.append(
+                f"- Customer {fact['entity_id']}: risk_level={fact['fact_value']} "
+                f"(version {fact['version']})"
+            )
 
-        if relevant_facts:
-            memory_parts.append("\nConsolidated Semantic Memory:")
-            for fact in relevant_facts:
-                memory_parts.append(str(fact))
+    return "\n".join(memory_parts)
 
-        return "\n".join(memory_parts)
+
+def route_and_log(candidates, scratchpad):
+    """
+    The route_fn handed to ShortTermMemory.add_message_with_routing()
+    and to the STEP 11 bulk-overflow handling below. Delegates the
+    actual forget-vs-promote decision to promote_or_drop_router.py
+    (which never writes to semantic memory itself - only to
+    episodic_memory and promote_or_drop_log), and mirrors every
+    decision into the scratchpad so it's visible in the turn's
+    working state, not just in the DB log.
+    """
+    from memory.episodic_memory.promote_or_drop_router import route_overflow
+
+    if not candidates:
+        return []
+
+    decisions = route_overflow(candidates)
+
+    for decision in decisions:
+        print(
+            f"[MEMORY] {decision['decision'].upper()} "
+            f"(episode_id={decision.get('episode_id')})"
+        )
+        print(f"[MEMORY] Reason: {decision['reason']}")
+
+        scratchpad.add_note(
+            f"Memory routing: {decision['decision']} "
+            f"(episode_id={decision.get('episode_id')})"
+        )
+
+    return decisions
 
 # ============================================================
 # MCP TOOL WRAPPER
 # ============================================================
 
-def convert_mcp_tool(session, mcp_tool, memory_system):
+def convert_mcp_tool(session, mcp_tool):
     async def progress_handler(progress: float, total: float | None, message: str | None = None):
         if total:
             print(f"[progress] {int(progress)}/{int(total)} scanned", end="\r")
@@ -196,20 +225,6 @@ def convert_mcp_tool(session, mcp_tool, memory_system):
 
         if result.isError:
             return f"TOOL ERROR: {text}"
-
-        if mcp_tool.name == "wire_transfer_initiate":
-            suspicious_keywords = ["suspicious", "fraud", "sanction", "compliance", "hold", "review", "risk"]
-            is_suspicious = any(keyword in text.lower() for keyword in suspicious_keywords)
-
-            memory_system.log_transfer(
-                employee_id=kwargs["employee_id"],
-                source_account_id=kwargs["source_account_id"],
-                amount=kwargs["amount"],
-                target_account=kwargs["destination_account_num"],
-                destination_country=kwargs["destination_country"],
-                result_text=text,
-                is_suspicious=is_suspicious,
-            )
 
         return text
 
@@ -361,12 +376,6 @@ async def main():
     llm = ChatGroq(groq_api_key=API_KEY, model="openai/gpt-oss-20b", temperature=0.1)
 
     # ========================================================
-    # LONG-TERM MEMORY
-    # ========================================================
-
-    memory_system = IntegratedMemorySystem()
-
-    # ========================================================
     # SAMPLING
     # ========================================================
 
@@ -454,7 +463,7 @@ async def main():
         mcp_tools = await session.list_tools()
         print("\nAvailable MCP Tools:", [tool.name for tool in mcp_tools.tools])
 
-        tools = [convert_mcp_tool(session, tool, memory_system) for tool in mcp_tools.tools]
+        tools = [convert_mcp_tool(session, tool) for tool in mcp_tools.tools]
         print("\nAgent Tools:", [tool.name for tool in tools])
 
         agent = build_agent(llm, tools)
@@ -472,13 +481,25 @@ async def main():
         scratchpad = Scratchpad()
         context_manager = ContextManager()
 
+        # ShortTermMemory.add_message_with_routing() refuses to evict
+        # anything without an explicit route_fn - this is the one
+        # route_fn used by every add_message call site below, so
+        # overflow is always handled the same way, not just at the
+        # one place someone remembered to wire it up.
+        def route_fn(candidates):
+            return route_and_log(candidates, scratchpad)
+
         # ====================================================
         # MCP RESOURCE → SHORT-TERM MEMORY
         # ====================================================
 
         if policy_text:
-            short_term_memory.add_message("user", f"[Bank Policy Reference]\n\n{policy_text}")
-            short_term_memory.add_message("assistant", "Policy reference loaded.")
+            short_term_memory.add_message_with_routing(
+                "user", f"[Bank Policy Reference]\n\n{policy_text}", route_fn=route_fn
+            )
+            short_term_memory.add_message_with_routing(
+                "assistant", "Policy reference loaded.", route_fn=route_fn
+            )
 
         # ====================================================
         # LIVE LOOP
@@ -494,7 +515,7 @@ async def main():
             # STEP 1 — USER → SHORT-TERM MEMORY
             # =================================================
 
-            short_term_memory.add_message("user", user)
+            short_term_memory.add_message_with_routing("user", user, route_fn=route_fn)
 
             # =================================================
             # STEP 2 — SCRATCHPAD
@@ -559,7 +580,7 @@ async def main():
             # =================================================
 
             scratchpad.set_current_step("Retrieving long-term memory")
-            long_term_context = memory_system.retrieve_relevant_memory(user)
+            long_term_context = retrieve_long_term_memory(user)
 
             if long_term_context:
                 print("[LONG-TERM MEMORY] Relevant memories found.")
@@ -622,6 +643,14 @@ async def main():
 
             generated_answer = response["messages"][-1].content
             final_response = response
+            # Tracks whichever message list was actually sent to the
+            # agent for the response we're keeping - context_messages
+            # normally, or fallback_context_messages if the verified
+            # long-term memory got stripped out and the agent was
+            # re-invoked below. STEP 9 needs this exact list (not
+            # context_messages) to correctly slice out only the
+            # messages the agent generated this turn.
+            final_context_messages = context_messages
 
             if long_term_context and memory_verification.supported:
                 print("\n[LONG-TERM MEMORY] Verifying generated answer...")
@@ -653,15 +682,30 @@ async def main():
 
                     final_response = await agent.ainvoke({"messages": fallback_context_messages})
                     generated_answer = final_response["messages"][-1].content
+                    final_context_messages = fallback_context_messages
                     print("[LONG-TERM MEMORY] Fallback answer generated without long-term memory.")
             else:
                 print("[LONG-TERM MEMORY] Answer verification skipped (no verified memory used).")
 
             # =================================================
-            # STEP 9 — TOOL NOTES
+            # STEP 9 — NEW MESSAGES GENERATED THIS TURN
             # =================================================
+            #
+            # final_context_messages is whichever input list actually
+            # produced final_response (context_messages, or
+            # fallback_context_messages after a failed verification -
+            # they can differ in length, so the offset MUST come from
+            # whichever one was really used, not always context_messages).
+            #
+            # This slice is also what keeps STEP 11 architecturally
+            # correct: new_messages contains only what the agent itself
+            # generated (tool calls, tool results, the final answer) -
+            # never the RAG / long-term-memory / scratchpad
+            # SystemMessages that were injected into the *input*, and
+            # never messages that were already sitting in
+            # short_term_memory before this turn.
 
-            new_messages = final_response["messages"][len(context_messages):]
+            new_messages = final_response["messages"][len(final_context_messages):]
 
             for message in new_messages:
                 tool_name = getattr(message, "name", None)
@@ -678,17 +722,25 @@ async def main():
             # =================================================
             # STEP 11 — SAVE CONVERSATION
             # =================================================
+            #
+            # Only the messages generated THIS turn (new_messages) are
+            # added to short-term memory - never the full
+            # final_response["messages"] list, which also contains the
+            # injected RAG/long-term-memory/scratchpad context and the
+            # messages short-term memory already had before this turn.
+            #
+            # Each message is added one at a time through
+            # add_normalized_message_with_routing(), so if adding it
+            # would overflow short-term memory, exactly the one real
+            # oldest message gets routed through the Promote-or-Drop
+            # Router before it's evicted - never a message that was
+            # already routed earlier, and never a bulk re-routing pass.
 
-            SCRATCHPAD_MARKER = "[Internal Scratchpad State]"
-
-            persisted_messages = [
-                message for message in final_response["messages"]
-                if SCRATCHPAD_MARKER not in (
-                    message.get("content", "") if isinstance(message, dict) else str(getattr(message, "content", ""))
+            for message in new_messages:
+                normalized = short_term_memory._normalize(message)
+                short_term_memory.add_normalized_message_with_routing(
+                    normalized, route_fn=route_fn
                 )
-            ]
-
-            short_term_memory.replace_messages(persisted_messages)
 
             # =================================================
             # STEP 12 — RESET SCRATCHPAD
@@ -703,7 +755,7 @@ async def main():
 
             if tools_ref["dirty"]:
                 mcp_tools = await session.list_tools()
-                tools = [convert_mcp_tool(session, tool, memory_system) for tool in mcp_tools.tools]
+                tools = [convert_mcp_tool(session, tool) for tool in mcp_tools.tools]
                 agent = build_agent(llm, tools)
                 tools_ref["dirty"] = False
                 print("Client updated its tool list:", [tool.name for tool in tools])
