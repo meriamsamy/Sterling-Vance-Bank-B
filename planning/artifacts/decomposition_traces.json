@@ -1,0 +1,324 @@
+[
+  {
+    "request_id": "wire_investigation_01",
+    "goal": "Investigate the recent wire transfer activity for customer account 2 and determine whether any transaction appears suspicious.",
+    "status": "success",
+    "execution_time_seconds": 2.1939277998171747,
+    "task_count": 4,
+    "topological_order": [
+      "t1",
+      "t2",
+      "t3",
+      "t4"
+    ],
+    "execution_batches": [
+      [
+        "t1"
+      ],
+      [
+        "t2"
+      ],
+      [
+        "t3"
+      ],
+      [
+        "t4"
+      ]
+    ],
+    "terminal_tasks": [
+      "t4"
+    ],
+    "tasks": {
+      "t1": {
+        "description": "Retrieve all recent wire transfer transactions for customer account 2 from the banking system.",
+        "action_type": "PENDING_ROUTING",
+        "dependencies": [],
+        "status": "COMPLETED",
+        "result": "Executed banking investigation task: Retrieve all recent wire transfer transactions for customer account 2 from the banking system.\nDependency context:\nNo dependency outputs."
+      },
+      "t2": {
+        "description": "Analyze each transaction for red flags such as unusually large amounts, frequent transfers, or unfamiliar recipients.",
+        "action_type": "PENDING_ROUTING",
+        "dependencies": [
+          "t1"
+        ],
+        "status": "COMPLETED",
+        "result": "Executed banking investigation task: Analyze each transaction for red flags such as unusually large amounts, frequent transfers, or unfamiliar recipients.\nDependency context:\nt1: Executed banking investigation task: Retrieve all recent wire transfer transactions for customer account 2 from the banking system.\nDependency context:\nNo dependency outputs."
+      },
+      "t3": {
+        "description": "Cross-reference flagged transactions with known fraud patterns and regulatory alerts.",
+        "action_type": "PENDING_ROUTING",
+        "dependencies": [
+          "t2"
+        ],
+        "status": "COMPLETED",
+        "result": "Executed banking investigation task: Cross-reference flagged transactions with known fraud patterns and regulatory alerts.\nDependency context:\nt2: Executed banking investigation task: Analyze each transaction for red flags such as unusually large amounts, frequent transfers, or unfamiliar recipients.\nDependency context:\nt1: Executed banking investigation task: Retrieve all recent wire transfer transactions for customer account 2 from the banking system.\nDependency context:\nNo dependency outputs."
+      },
+      "t4": {
+        "description": "Compile a report summarizing findings and state whether any transaction appears suspicious.",
+        "action_type": "PENDING_ROUTING",
+        "dependencies": [
+          "t3"
+        ],
+        "status": "COMPLETED",
+        "result": "Executed banking investigation task: Compile a report summarizing findings and state whether any transaction appears suspicious.\nDependency context:\nt3: Executed banking investigation task: Cross-reference flagged transactions with known fraud patterns and regulatory alerts.\nDependency context:\nt2: Executed banking investigation task: Analyze each transaction for red flags such as unusually large amounts, frequent transfers, or unfamiliar recipients.\nDependency context:\nt1: Executed banking investigation task: Retrieve all recent wire transfer transactions for customer account 2 from the banking system.\nDependency context:\nNo dependency outputs."
+      }
+    },
+    "outputs": {
+      "t1": "Executed banking investigation task: Retrieve all recent wire transfer transactions for customer account 2 from the banking system.\nDependency context:\nNo dependency outputs.",
+      "t2": "Executed banking investigation task: Analyze each transaction for red flags such as unusually large amounts, frequent transfers, or unfamiliar recipients.\nDependency context:\nt1: Executed banking investigation task: Retrieve all recent wire transfer transactions for customer account 2 from the banking system.\nDependency context:\nNo dependency outputs.",
+      "t3": "Executed banking investigation task: Cross-reference flagged transactions with known fraud patterns and regulatory alerts.\nDependency context:\nt2: Executed banking investigation task: Analyze each transaction for red flags such as unusually large amounts, frequent transfers, or unfamiliar recipients.\nDependency context:\nt1: Executed banking investigation task: Retrieve all recent wire transfer transactions for customer account 2 from the banking system.\nDependency context:\nNo dependency outputs.",
+      "t4": "Executed banking investigation task: Compile a report summarizing findings and state whether any transaction appears suspicious.\nDependency context:\nt3: Executed banking investigation task: Cross-reference flagged transactions with known fraud patterns and regulatory alerts.\nDependency context:\nt2: Executed banking investigation task: Analyze each transaction for red flags such as unusually large amounts, frequent transfers, or unfamiliar recipients.\nDependency context:\nt1: Executed banking investigation task: Retrieve all recent wire transfer transactions for customer account 2 from the banking system.\nDependency context:\nNo dependency outputs."
+    }
+  },
+  {
+    "request_id": "customer_activity_01",
+    "goal": "Review the recent financial activity of customer account 2 and identify unusual transactions or suspicious patterns.",
+    "status": "success",
+    "execution_time_seconds": 1.4394105998799205,
+    "task_count": 5,
+    "topological_order": [
+      "t1",
+      "t2",
+      "t3",
+      "t4",
+      "t5"
+    ],
+    "execution_batches": [
+      [
+        "t1"
+      ],
+      [
+        "t2"
+      ],
+      [
+        "t3",
+        "t4"
+      ],
+      [
+        "t5"
+      ]
+    ],
+    "terminal_tasks": [
+      "t5"
+    ],
+    "tasks": {
+      "t1": {
+        "description": "Retrieve all transaction records for customer account 2 from the database.",
+        "action_type": "PENDING_ROUTING",
+        "dependencies": [],
+        "status": "COMPLETED",
+        "result": "Executed banking investigation task: Retrieve all transaction records for customer account 2 from the database.\nDependency context:\nNo dependency outputs."
+      },
+      "t2": {
+        "description": "Filter the retrieved transactions to include only those from the last 30 days.",
+        "action_type": "PENDING_ROUTING",
+        "dependencies": [
+          "t1"
+        ],
+        "status": "COMPLETED",
+        "result": "Executed banking investigation task: Filter the retrieved transactions to include only those from the last 30 days.\nDependency context:\nt1: Executed banking investigation task: Retrieve all transaction records for customer account 2 from the database.\nDependency context:\nNo dependency outputs."
+      },
+      "t3": {
+        "description": "Analyze the filtered transactions to flag any that are unusually large, foreign, or otherwise atypical based on predefined criteria.",
+        "action_type": "PENDING_ROUTING",
+        "dependencies": [
+          "t2"
+        ],
+        "status": "COMPLETED",
+        "result": "Executed banking investigation task: Analyze the filtered transactions to flag any that are unusually large, foreign, or otherwise atypical based on predefined criteria.\nDependency context:\nt2: Executed banking investigation task: Filter the retrieved transactions to include only those from the last 30 days.\nDependency context:\nt1: Executed banking investigation task: Retrieve all transaction records for customer account 2 from the database.\nDependency context:\nNo dependency outputs."
+      },
+      "t4": {
+        "description": "Examine the filtered transactions for suspicious patterns such as rapid transfers, clustering, or other red flags.",
+        "action_type": "PENDING_ROUTING",
+        "dependencies": [
+          "t2"
+        ],
+        "status": "COMPLETED",
+        "result": "Executed banking investigation task: Examine the filtered transactions for suspicious patterns such as rapid transfers, clustering, or other red flags.\nDependency context:\nt2: Executed banking investigation task: Filter the retrieved transactions to include only those from the last 30 days.\nDependency context:\nt1: Executed banking investigation task: Retrieve all transaction records for customer account 2 from the database.\nDependency context:\nNo dependency outputs."
+      },
+      "t5": {
+        "description": "Compile a concise report summarizing the identified unusual transactions and suspicious patterns, including recommendations for further investigation.",
+        "action_type": "PENDING_ROUTING",
+        "dependencies": [
+          "t3",
+          "t4"
+        ],
+        "status": "COMPLETED",
+        "result": "Executed banking investigation task: Compile a concise report summarizing the identified unusual transactions and suspicious patterns, including recommendations for further investigation.\nDependency context:\nt3: Executed banking investigation task: Analyze the filtered transactions to flag any that are unusually large, foreign, or otherwise atypical based on predefined criteria.\nDependency context:\nt2: Executed banking investigation task: Filter the retrieved transactions to include only those from the last 30 days.\nDependency context:\nt1: Executed banking investigation task: Retrieve all transaction records for customer account 2 from the database.\nDependency context:\nNo dependency outputs.\nt4: Executed banking investigation task: Examine the filtered transactions for suspicious patterns such as rapid transfers, clustering, or other red flags.\nDependency context:\nt2: Executed banking investigation task: Filter the retrieved transactions to include only those from the last 30 days.\nDependency context:\nt1: Executed banking investigation task: Retrieve all transaction records for customer account 2 from the database.\nDependency context:\nNo dependency outputs."
+      }
+    },
+    "outputs": {
+      "t1": "Executed banking investigation task: Retrieve all transaction records for customer account 2 from the database.\nDependency context:\nNo dependency outputs.",
+      "t2": "Executed banking investigation task: Filter the retrieved transactions to include only those from the last 30 days.\nDependency context:\nt1: Executed banking investigation task: Retrieve all transaction records for customer account 2 from the database.\nDependency context:\nNo dependency outputs.",
+      "t3": "Executed banking investigation task: Analyze the filtered transactions to flag any that are unusually large, foreign, or otherwise atypical based on predefined criteria.\nDependency context:\nt2: Executed banking investigation task: Filter the retrieved transactions to include only those from the last 30 days.\nDependency context:\nt1: Executed banking investigation task: Retrieve all transaction records for customer account 2 from the database.\nDependency context:\nNo dependency outputs.",
+      "t4": "Executed banking investigation task: Examine the filtered transactions for suspicious patterns such as rapid transfers, clustering, or other red flags.\nDependency context:\nt2: Executed banking investigation task: Filter the retrieved transactions to include only those from the last 30 days.\nDependency context:\nt1: Executed banking investigation task: Retrieve all transaction records for customer account 2 from the database.\nDependency context:\nNo dependency outputs.",
+      "t5": "Executed banking investigation task: Compile a concise report summarizing the identified unusual transactions and suspicious patterns, including recommendations for further investigation.\nDependency context:\nt3: Executed banking investigation task: Analyze the filtered transactions to flag any that are unusually large, foreign, or otherwise atypical based on predefined criteria.\nDependency context:\nt2: Executed banking investigation task: Filter the retrieved transactions to include only those from the last 30 days.\nDependency context:\nt1: Executed banking investigation task: Retrieve all transaction records for customer account 2 from the database.\nDependency context:\nNo dependency outputs.\nt4: Executed banking investigation task: Examine the filtered transactions for suspicious patterns such as rapid transfers, clustering, or other red flags.\nDependency context:\nt2: Executed banking investigation task: Filter the retrieved transactions to include only those from the last 30 days.\nDependency context:\nt1: Executed banking investigation task: Retrieve all transaction records for customer account 2 from the database.\nDependency context:\nNo dependency outputs."
+    }
+  },
+  {
+    "request_id": "high_risk_wire_01",
+    "goal": "Investigate the $1000 wire transfer from account 2 to FR-TEST-001 and determine whether it requires additional review.",
+    "status": "success",
+    "execution_time_seconds": 0.9048731999937445,
+    "task_count": 6,
+    "topological_order": [
+      "t1",
+      "t2",
+      "t3",
+      "t4",
+      "t5",
+      "t6"
+    ],
+    "execution_batches": [
+      [
+        "t1"
+      ],
+      [
+        "t2",
+        "t3"
+      ],
+      [
+        "t4"
+      ],
+      [
+        "t5"
+      ],
+      [
+        "t6"
+      ]
+    ],
+    "terminal_tasks": [
+      "t6"
+    ],
+    "tasks": {
+      "t1": {
+        "description": "Retrieve the transaction details for the $1000 wire transfer from account 2 to FR-TEST-001.",
+        "action_type": "PENDING_ROUTING",
+        "dependencies": [],
+        "status": "COMPLETED",
+        "result": "Executed banking investigation task: Retrieve the transaction details for the $1000 wire transfer from account 2 to FR-TEST-001.\nDependency context:\nNo dependency outputs."
+      },
+      "t2": {
+        "description": "Verify compliance rules applicable to wire transfers of $1000 or more.",
+        "action_type": "PENDING_ROUTING",
+        "dependencies": [
+          "t1"
+        ],
+        "status": "COMPLETED",
+        "result": "Executed banking investigation task: Verify compliance rules applicable to wire transfers of $1000 or more.\nDependency context:\nt1: Executed banking investigation task: Retrieve the transaction details for the $1000 wire transfer from account 2 to FR-TEST-001.\nDependency context:\nNo dependency outputs."
+      },
+      "t3": {
+        "description": "Check if the recipient account FR-TEST-001 is flagged or on any watchlist.",
+        "action_type": "PENDING_ROUTING",
+        "dependencies": [
+          "t1"
+        ],
+        "status": "COMPLETED",
+        "result": "Executed banking investigation task: Check if the recipient account FR-TEST-001 is flagged or on any watchlist.\nDependency context:\nt1: Executed banking investigation task: Retrieve the transaction details for the $1000 wire transfer from account 2 to FR-TEST-001.\nDependency context:\nNo dependency outputs."
+      },
+      "t4": {
+        "description": "Evaluate the risk score based on transaction amount, recipient status, and compliance check results.",
+        "action_type": "PENDING_ROUTING",
+        "dependencies": [
+          "t2",
+          "t3"
+        ],
+        "status": "COMPLETED",
+        "result": "Executed banking investigation task: Evaluate the risk score based on transaction amount, recipient status, and compliance check results.\nDependency context:\nt2: Executed banking investigation task: Verify compliance rules applicable to wire transfers of $1000 or more.\nDependency context:\nt1: Executed banking investigation task: Retrieve the transaction details for the $1000 wire transfer from account 2 to FR-TEST-001.\nDependency context:\nNo dependency outputs.\nt3: Executed banking investigation task: Check if the recipient account FR-TEST-001 is flagged or on any watchlist.\nDependency context:\nt1: Executed banking investigation task: Retrieve the transaction details for the $1000 wire transfer from account 2 to FR-TEST-001.\nDependency context:\nNo dependency outputs."
+      },
+      "t5": {
+        "description": "Determine whether additional review is required based on the calculated risk score and predefined thresholds.",
+        "action_type": "PENDING_ROUTING",
+        "dependencies": [
+          "t4"
+        ],
+        "status": "COMPLETED",
+        "result": "Executed banking investigation task: Determine whether additional review is required based on the calculated risk score and predefined thresholds.\nDependency context:\nt4: Executed banking investigation task: Evaluate the risk score based on transaction amount, recipient status, and compliance check results.\nDependency context:\nt2: Executed banking investigation task: Verify compliance rules applicable to wire transfers of $1000 or more.\nDependency context:\nt1: Executed banking investigation task: Retrieve the transaction details for the $1000 wire transfer from account 2 to FR-TEST-001.\nDependency context:\nNo dependency outputs.\nt3: Executed banking investigation task: Check if the recipient account FR-TEST-001 is flagged or on any watchlist.\nDependency context:\nt1: Executed banking investigation task: Retrieve the transaction details for the $1000 wire transfer from account 2 to FR-TEST-001.\nDependency context:\nNo dependency outputs."
+      },
+      "t6": {
+        "description": "Compile findings and provide a recommendation on whether to proceed or trigger additional review.",
+        "action_type": "PENDING_ROUTING",
+        "dependencies": [
+          "t5"
+        ],
+        "status": "COMPLETED",
+        "result": "Executed banking investigation task: Compile findings and provide a recommendation on whether to proceed or trigger additional review.\nDependency context:\nt5: Executed banking investigation task: Determine whether additional review is required based on the calculated risk score and predefined thresholds.\nDependency context:\nt4: Executed banking investigation task: Evaluate the risk score based on transaction amount, recipient status, and compliance check results.\nDependency context:\nt2: Executed banking investigation task: Verify compliance rules applicable to wire transfers of $1000 or more.\nDependency context:\nt1: Executed banking investigation task: Retrieve the transaction details for the $1000 wire transfer from account 2 to FR-TEST-001.\nDependency context:\nNo dependency outputs.\nt3: Executed banking investigation task: Check if the recipient account FR-TEST-001 is flagged or on any watchlist.\nDependency context:\nt1: Executed banking investigation task: Retrieve the transaction details for the $1000 wire transfer from account 2 to FR-TEST-001.\nDependency context:\nNo dependency outputs."
+      }
+    },
+    "outputs": {
+      "t1": "Executed banking investigation task: Retrieve the transaction details for the $1000 wire transfer from account 2 to FR-TEST-001.\nDependency context:\nNo dependency outputs.",
+      "t2": "Executed banking investigation task: Verify compliance rules applicable to wire transfers of $1000 or more.\nDependency context:\nt1: Executed banking investigation task: Retrieve the transaction details for the $1000 wire transfer from account 2 to FR-TEST-001.\nDependency context:\nNo dependency outputs.",
+      "t3": "Executed banking investigation task: Check if the recipient account FR-TEST-001 is flagged or on any watchlist.\nDependency context:\nt1: Executed banking investigation task: Retrieve the transaction details for the $1000 wire transfer from account 2 to FR-TEST-001.\nDependency context:\nNo dependency outputs.",
+      "t4": "Executed banking investigation task: Evaluate the risk score based on transaction amount, recipient status, and compliance check results.\nDependency context:\nt2: Executed banking investigation task: Verify compliance rules applicable to wire transfers of $1000 or more.\nDependency context:\nt1: Executed banking investigation task: Retrieve the transaction details for the $1000 wire transfer from account 2 to FR-TEST-001.\nDependency context:\nNo dependency outputs.\nt3: Executed banking investigation task: Check if the recipient account FR-TEST-001 is flagged or on any watchlist.\nDependency context:\nt1: Executed banking investigation task: Retrieve the transaction details for the $1000 wire transfer from account 2 to FR-TEST-001.\nDependency context:\nNo dependency outputs.",
+      "t5": "Executed banking investigation task: Determine whether additional review is required based on the calculated risk score and predefined thresholds.\nDependency context:\nt4: Executed banking investigation task: Evaluate the risk score based on transaction amount, recipient status, and compliance check results.\nDependency context:\nt2: Executed banking investigation task: Verify compliance rules applicable to wire transfers of $1000 or more.\nDependency context:\nt1: Executed banking investigation task: Retrieve the transaction details for the $1000 wire transfer from account 2 to FR-TEST-001.\nDependency context:\nNo dependency outputs.\nt3: Executed banking investigation task: Check if the recipient account FR-TEST-001 is flagged or on any watchlist.\nDependency context:\nt1: Executed banking investigation task: Retrieve the transaction details for the $1000 wire transfer from account 2 to FR-TEST-001.\nDependency context:\nNo dependency outputs.",
+      "t6": "Executed banking investigation task: Compile findings and provide a recommendation on whether to proceed or trigger additional review.\nDependency context:\nt5: Executed banking investigation task: Determine whether additional review is required based on the calculated risk score and predefined thresholds.\nDependency context:\nt4: Executed banking investigation task: Evaluate the risk score based on transaction amount, recipient status, and compliance check results.\nDependency context:\nt2: Executed banking investigation task: Verify compliance rules applicable to wire transfers of $1000 or more.\nDependency context:\nt1: Executed banking investigation task: Retrieve the transaction details for the $1000 wire transfer from account 2 to FR-TEST-001.\nDependency context:\nNo dependency outputs.\nt3: Executed banking investigation task: Check if the recipient account FR-TEST-001 is flagged or on any watchlist.\nDependency context:\nt1: Executed banking investigation task: Retrieve the transaction details for the $1000 wire transfer from account 2 to FR-TEST-001.\nDependency context:\nNo dependency outputs."
+    }
+  },
+  {
+    "request_id": "aml_investigation_01",
+    "goal": "Investigate customer account 2 for potential AML risk using transaction history, wire activity, sanctions information, and related evidence.",
+    "status": "success",
+    "execution_time_seconds": 0.8106027999892831,
+    "task_count": 4,
+    "topological_order": [
+      "t1",
+      "t2",
+      "t3",
+      "t4"
+    ],
+    "execution_batches": [
+      [
+        "t1",
+        "t2",
+        "t3"
+      ],
+      [
+        "t4"
+      ]
+    ],
+    "terminal_tasks": [
+      "t4"
+    ],
+    "tasks": {
+      "t1": {
+        "description": "Retrieve the full transaction history for customer account 2.",
+        "action_type": "PENDING_ROUTING",
+        "dependencies": [],
+        "status": "COMPLETED",
+        "result": "Executed banking investigation task: Retrieve the full transaction history for customer account 2.\nDependency context:\nNo dependency outputs."
+      },
+      "t2": {
+        "description": "Retrieve all wire activity records for customer account 2.",
+        "action_type": "PENDING_ROUTING",
+        "dependencies": [],
+        "status": "COMPLETED",
+        "result": "Executed banking investigation task: Retrieve all wire activity records for customer account 2.\nDependency context:\nNo dependency outputs."
+      },
+      "t3": {
+        "description": "Retrieve sanctions screening results for customer account 2.",
+        "action_type": "PENDING_ROUTING",
+        "dependencies": [],
+        "status": "COMPLETED",
+        "result": "Executed banking investigation task: Retrieve sanctions screening results for customer account 2.\nDependency context:\nNo dependency outputs."
+      },
+      "t4": {
+        "description": "Compile all gathered data and assess potential AML risk for customer account 2.",
+        "action_type": "PENDING_ROUTING",
+        "dependencies": [
+          "t1",
+          "t2",
+          "t3"
+        ],
+        "status": "COMPLETED",
+        "result": "Executed banking investigation task: Compile all gathered data and assess potential AML risk for customer account 2.\nDependency context:\nt1: Executed banking investigation task: Retrieve the full transaction history for customer account 2.\nDependency context:\nNo dependency outputs.\nt2: Executed banking investigation task: Retrieve all wire activity records for customer account 2.\nDependency context:\nNo dependency outputs.\nt3: Executed banking investigation task: Retrieve sanctions screening results for customer account 2.\nDependency context:\nNo dependency outputs."
+      }
+    },
+    "outputs": {
+      "t2": "Executed banking investigation task: Retrieve all wire activity records for customer account 2.\nDependency context:\nNo dependency outputs.",
+      "t3": "Executed banking investigation task: Retrieve sanctions screening results for customer account 2.\nDependency context:\nNo dependency outputs.",
+      "t1": "Executed banking investigation task: Retrieve the full transaction history for customer account 2.\nDependency context:\nNo dependency outputs.",
+      "t4": "Executed banking investigation task: Compile all gathered data and assess potential AML risk for customer account 2.\nDependency context:\nt1: Executed banking investigation task: Retrieve the full transaction history for customer account 2.\nDependency context:\nNo dependency outputs.\nt2: Executed banking investigation task: Retrieve all wire activity records for customer account 2.\nDependency context:\nNo dependency outputs.\nt3: Executed banking investigation task: Retrieve sanctions screening results for customer account 2.\nDependency context:\nNo dependency outputs."
+    }
+  }
+]
