@@ -97,6 +97,23 @@ def direct_check_sanctions(destination_country: str) -> bool:
     return db.is_sanctioned(destination_country)
 
 
+def direct_get_destination_countries(account_ids: list[int]) -> list[str]:
+    """Real outbound wire destinations for these accounts, straight from
+    wire_transfers — not invented, not guessed. Empty if the customer has
+    no wire history yet."""
+    if not account_ids:
+        return []
+    conn = db.get_conn()
+    placeholders = ",".join("?" for _ in account_ids)
+    rows = conn.execute(
+        f"SELECT DISTINCT destination_country FROM wire_transfers "
+        f"WHERE source_account_id IN ({placeholders})",
+        account_ids,
+    ).fetchall()
+    conn.close()
+    return [row["destination_country"] for row in rows if row["destination_country"]]
+
+
 def dispatch(
     task_id: str,
     instruction: str,
@@ -122,7 +139,10 @@ def dispatch(
         if task_id == "get_transactions":
             return direct_get_transactions(account_ids[0])
         if task_id == "check_sanctions":
-            return direct_check_sanctions(destination_country)
+            countries = [destination_country] if destination_country else direct_get_destination_countries(account_ids or [])
+            if not countries:
+                return {"checked": [], "sanctioned": [], "note": "No outbound wire history for this customer yet."}
+            return {"checked": countries, "sanctioned": [c for c in countries if direct_check_sanctions(c)]}
         raise ValueError(f"No direct handler wired for {task_id!r}")
 
     if decision.method == "ps":
