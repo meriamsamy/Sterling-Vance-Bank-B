@@ -21,13 +21,20 @@ import asyncio
 import os
 import sys
 from datetime import datetime, timezone
-
+from typing import Any
+import re
 import mcp.types as types
 from mcp.server import Server, NotificationOptions
 from mcp.server.stdio import stdio_server
 
 import db_access as db
-from schemas import LOGIN_SCHEMA, GET_ACCOUNT_SCHEMA, WIRE_TRANSFER_SCHEMA, BATCH_SCAN_SCHEMA
+from schemas import (
+    LOGIN_SCHEMA,
+    GET_ACCOUNT_SCHEMA,
+    WIRE_TRANSFER_SCHEMA,
+    BATCH_SCAN_SCHEMA,
+    VALIDATE_INVESTIGATION_OUTPUT_SCHEMA,
+)
 from policy_document import WIRE_TRANSFER_POLICY
 
 server = Server("sterling-vance-wire-server")
@@ -47,7 +54,40 @@ BASE_TOOLS = [
 COMPLIANCE_TOOLS = [
     types.Tool(name="batch_sanctions_scan", description="Scan all transactions against the sanctions list. Reports progress as it runs.", inputSchema=BATCH_SCAN_SCHEMA),
 ]
+VALIDATION_TOOLS = [
+    types.Tool(
+        name="validate_investigation",
+        description=(
+            "Validate a planning agent investigation result against "
+            "the real Sterling & Vance banking database. "
+            "This is an external grounded validator; it does not use "
+            "LLM self-critique as the source of truth."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "string",
+                    "description": "The investigation sub-task being evaluated.",
+                },
+                "candidate": {
+                    "type": "string",
+                    "description": "The planning agent's proposed result.",
+                },
+            },
+            "required": ["task", "candidate"],
+            "additionalProperties": False,
+        },
 
+        # ADAPTATION FROM THE TOOLKIT:
+        # Added because our grounded validator returns structured data
+        # that must be consumed by the Environment through MCP.
+        #
+        # The original toolkit's randomized Environment did not need
+        # an MCP output schema because it evaluated candidates locally.
+        outputSchema=VALIDATE_INVESTIGATION_OUTPUT_SCHEMA,
+    )
+]
 
 @server.list_tools()
 async def list_tools():
@@ -55,8 +95,11 @@ async def list_tools():
     if emp_id is None:
         return BASE_TOOLS
     employee = db.get_employee(emp_id)
+    if employee is None:
+        return BASE_TOOLS
     if employee["role"] in ("compliance_officer", "fraud_investigator"):
-        return BASE_TOOLS + COMPLIANCE_TOOLS
+        return BASE_TOOLS + COMPLIANCE_TOOLS + VALIDATION_TOOLS
+    
     return BASE_TOOLS
 
 
@@ -71,7 +114,13 @@ async def call_tool(name: str, args: dict):
         return await wire_transfer(args, ctx)
     if name == "batch_sanctions_scan":
         return await batch_scan(args, ctx)
+    if name == "validate_investigation":
+        return await validate_investigation(
+            task=args["task"],
+            candidate=args["candidate"],
+        )
     raise ValueError(f"unknown tool: {name}")
+
 
 
 # ============================= [RESOURCES] ==============================
@@ -215,6 +264,276 @@ async def analyze_wire_risk(transaction_history: str, ctx) -> str:
     risk = "high" if "HIGH" in analysis.upper() else "medium" if "MEDIUM" in analysis.upper() else "low"
     return f"Risk Assessment: {risk}\n\nAnalysis:\n{analysis}"
 
+
+# ADDED FOR GROUNDED VALIDATION:
+# These helper functions extract banking identifiers and values from
+# LLM-generated candidates so validate_investigation() can compare
+# the candidate's claims against the real database.
+#
+# They are needed because the grounded validator must verify concrete
+# banking facts (transfer IDs, account IDs, statuses, amounts, and balances) 
+# instead of relying on the LLM's self-evaluation.
+def _extract_ids(text: str, patterns: list[str]) -> list[int]:
+    ids: set[int] = set()
+    for pattern in patterns:
+        for match in re.findall(pattern, text, re.IGNORECASE):
+            try:
+                ids.add(int(match))
+            except ValueError:
+                continue
+    return sorted(ids)
+
+
+def _extract_status(text: str) -> str | None:
+    text_lower = text.lower()
+    statuses = {
+        "pending_manual_review",
+        "approved",
+        "rejected",
+    }
+    for status in statuses:
+        if status in text_lower:
+            return status
+
+    aliases = {
+        "pending": "pending_manual_review",
+        "held": "pending_manual_review",
+        "on hold": "pending_manual_review",
+    }
+    for alias, status in aliases.items():
+        if alias in text_lower:
+            return status
+
+    return None
+
+
+def _extract_amount(text: str) -> float | None:
+    match = re.search(
+        r"(?:amount|value)\s*[:=]?\s*\$?\s*([\d,]+(?:\.\d+)?)",
+        text,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    return float(match.group(1).replace(",", ""))
+
+
+def _extract_balance(text: str) -> float | None:
+    match = re.search(
+        r"(?:balance|available balance)\s*[:=]?\s*\$?\s*([\d,]+(?:\.\d+)?)",
+        text,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    return float(match.group(1).replace(",", ""))
+
+
+# add validate_investigation to call it in environment.py
+# ADDED FOR GROUNDED LATS / SELF-CORRECTION:
+# Provides a real MCP validation tool that can be called by
+# planning/environment.py.
+# The reference toolkit used a randomized environment for evaluation.
+# This banking adaptation replaces that with deterministic checks
+# against the actual Sterling & Vance SQLite database.
+# This makes the external environment the source of truth for
+# validating LLM-generated investigation candidates.
+async def validate_investigation(
+    task: str,
+    candidate: str,
+) -> dict[str, Any]:
+    """
+    Grounded validation tool.
+
+    SOURCE OF TRUTH:
+        The real Sterling & Vance SQLite database.
+
+    The LLM's self-critique is NOT used as the source of truth.
+    """
+
+    if not task.strip():
+        return {
+            "success": False,
+            "details": ["Validation task is empty."],
+        }
+
+    if not candidate.strip():
+        return {
+            "success": False,
+            "details": ["Candidate result is empty."],
+        }
+
+    checks: list[bool] = []
+    details: list[str] = [
+        "SOURCE OF TRUTH: Sterling & Vance real SQLite database."
+    ]
+
+    # 1. Validate referenced wire transfers
+    transfer_ids = _extract_ids(
+        candidate,
+        patterns=[
+            r"transfer\s*#?\s*(\d+)",
+            r"wire\s*#?\s*(\d+)",
+            r"transfer_id\s*[:=]\s*(\d+)",
+        ],
+    )
+
+    for transfer_id in transfer_ids:
+        conn = db.get_conn()
+        row = conn.execute(
+            """
+            SELECT *
+            FROM wire_transfers
+            WHERE transfer_id = ?
+            """,
+            (transfer_id,),
+        ).fetchone()
+        conn.close()
+
+        if row is None:
+            checks.append(False)
+            details.append(
+                f"Grounded DB check failed: "
+                f"wire transfer #{transfer_id} does not exist."
+            )
+            continue
+
+        checks.append(True)
+        details.append(
+            f"Grounded DB check passed: "
+            f"wire transfer #{transfer_id} exists."
+        )
+
+        actual_status = str(row["status"]).lower()
+        expected_status = _extract_status(candidate)
+
+        if expected_status is not None:
+            if actual_status == expected_status:
+                checks.append(True)
+                details.append(
+                    f"Transfer #{transfer_id} status matches "
+                    f"the database: {actual_status}."
+                )
+            else:
+                checks.append(False)
+                details.append(
+                    f"Transfer #{transfer_id} status mismatch: "
+                    f"candidate says '{expected_status}', "
+                    f"database says '{actual_status}'."
+                )
+
+        expected_amount = _extract_amount(candidate)
+
+        if expected_amount is not None:
+            actual_amount = float(row["amount"])
+
+            if abs(expected_amount - actual_amount) < 0.01:
+                checks.append(True)
+                details.append(
+                    f"Transfer #{transfer_id} amount matches "
+                    f"the database: {actual_amount:.2f}."
+                )
+            else:
+                checks.append(False)
+                details.append(
+                    f"Transfer #{transfer_id} amount mismatch: "
+                    f"candidate says {expected_amount:.2f}, "
+                    f"database says {actual_amount:.2f}."
+                )
+
+    # 2. Validate referenced accounts
+    account_ids = _extract_ids(
+        candidate,
+        patterns=[
+            r"account\s*#?\s*(\d+)",
+            r"account_id\s*[:=]\s*(\d+)",
+        ],
+    )
+
+    for account_id in account_ids:
+        row = db.get_account(account_id)
+
+        if row is None:
+            checks.append(False)
+            details.append(
+                f"Grounded DB check failed: "
+                f"account #{account_id} does not exist."
+            )
+            continue
+
+        checks.append(True)
+        details.append(
+            f"Grounded DB check passed: "
+            f"account #{account_id} exists."
+        )
+
+        expected_balance = _extract_balance(candidate)
+
+        if expected_balance is not None:
+            actual_balance = float(row["balance"])
+
+            if abs(expected_balance - actual_balance) < 0.01:
+                checks.append(True)
+                details.append(
+                    f"Account #{account_id} balance matches "
+                    f"the database: {actual_balance:.2f}."
+                )
+            else:
+                checks.append(False)
+                details.append(
+                    f"Account #{account_id} balance mismatch: "
+                    f"candidate says {expected_balance:.2f}, "
+                    f"database says {actual_balance:.2f}."
+                )
+
+    # 3. Validate referenced employees
+    employee_ids = _extract_ids(
+        candidate,
+        patterns=[
+            r"employee\s*#?\s*(\d+)",
+            r"employee_id\s*[:=]\s*(\d+)",
+        ],
+    )
+
+    for employee_id in employee_ids:
+        row = db.get_employee(employee_id)
+
+        if row is None:
+            checks.append(False)
+            details.append(
+                f"Grounded DB check failed: "
+                f"employee #{employee_id} does not exist."
+            )
+            continue
+
+        checks.append(True)
+        details.append(
+            f"Grounded DB check passed: "
+            f"employee #{employee_id} exists."
+        )
+
+    # 4. Candidate must reference a concrete banking object
+    if not transfer_ids and not account_ids and not employee_ids:
+        checks.append(False)
+        details.append(
+            "Grounded validation failed: "
+            "the candidate does not reference a concrete "
+            "banking object that can be checked."
+        )
+
+    # 5. Final grounded result
+    success = bool(checks) and all(checks)
+
+    details.append(
+        "All grounded database checks passed."
+        if success
+        else "At least one grounded database check failed."
+    )
+
+    return {
+        "success": success,
+        "details": details,
+    }
 
 # ========================== [DEFENSIVE TOOL DESIGN] =======================
 # 1) schema already caught bad types/missing fields (schemas.py: typed,
