@@ -24,11 +24,22 @@ which the lab requires:
 """
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
 
 from .decomposition import InvestigationDAG, TaskDecomposerAdapter, TaskNode
-from .router import dispatch, route_subtask
+from .router import RoutingTrace, dispatch, route_subtask
+
+# Same artifacts/ convention the forked toolkit's own cli.py uses
+# (planning_lab/cli.py: save_artifact -> artifacts/run-<timestamp>.json),
+# extended with a routing_trace field rather than a second logging system.
+# Resolved against THIS repo's root, not the toolkit's — the toolkit is
+# pip-installed (git+...), so its own ROOT would resolve inside
+# site-packages if we called its save_artifact() directly.
+ARTIFACTS_DIR = Path(__file__).resolve().parent.parent / "artifacts"
 
 # Very small, literal parse of analyze_wires' free-text PS output looking
 # for something like "counterparty ACC_UNKNOWN_99" or "unknown counterparty
@@ -55,6 +66,28 @@ class InvestigationRun:
     tokens_estimate: int = 0
     order_executed: list[str] = field(default_factory=list)
     dynamic_task_injected: str | None = None
+    trace: RoutingTrace = field(default_factory=RoutingTrace)
+
+
+def save_run_artifact(run: InvestigationRun, customer_id: int, dynamic: bool) -> Path:
+    """Persist this run's routing trace (task_id/method/reason/timestamp
+    per sub-task) into artifacts/, same JSON-payload style as the
+    toolkit's own run artifacts — satisfies 'routing decisions are
+    recorded in the execution trace' (Issue #68)."""
+    ARTIFACTS_DIR.mkdir(exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    path = ARTIFACTS_DIR / f"run-{stamp}.json"
+    payload = {
+        "mode": "dynamic" if dynamic else "decomposition-first",
+        "customer_id": customer_id,
+        "order_executed": run.order_executed,
+        "dynamic_task_injected": run.dynamic_task_injected,
+        "llm_calls": run.llm_calls,
+        "routing_trace": run.trace.as_payload(),
+        "results": {task_id: run.dag.nodes[task_id].result for task_id in run.order_executed},
+    }
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+    return path
 
 
 def _evidence_context(dag: InvestigationDAG, node: TaskNode) -> str:
@@ -77,6 +110,7 @@ def run_investigation(
     llm,
     environment=None,
     dynamic: bool = True,
+    save_artifact: bool = True,
 ) -> InvestigationRun:
     """Run the full investigation DAG for one customer.
 
@@ -87,6 +121,9 @@ def run_investigation(
                       decompose_goal() is executed as-is; a real
                       counterparty discovery is logged but never acted on,
                       which is the divergence case the lab asks to show.
+    save_artifact -> writes the run's routing trace to artifacts/ when
+                      True (default). Tests set this False to avoid
+                      littering the repo with run-*.json files.
     """
     dag = InvestigationDAG()
     adapter = TaskDecomposerAdapter(dag)
@@ -114,6 +151,7 @@ def run_investigation(
                 customer_id=context["customer_id"],
                 destination_country=node.destination_country,
                 environment=environment,
+                trace=run.trace,
             )
             dag.mark_completed(node.task_id, result)
             run.order_executed.append(node.task_id)
@@ -135,5 +173,8 @@ def run_investigation(
                 if counterparty:
                     adapter.apply_dynamic_decomposition(node, {"unlinked_counterparty": counterparty})
                     run.dynamic_task_injected = f"investigate_counterparty_{counterparty}"
+
+    if save_artifact:
+        save_run_artifact(run, customer_id, dynamic)
 
     return run

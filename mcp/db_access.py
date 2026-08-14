@@ -43,6 +43,34 @@ def get_account(account_id: int):
     conn.close()
     return row
 
+
+def get_customer_accounts(customer_id: int):
+    """All accounts linked to a customer — backs the get_customer_accounts
+    investigation tool. Read-only, same table get_account already reads."""
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT account_id, account_type, balance FROM accounts WHERE customer_id = ?",
+        (customer_id,),
+    ).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def get_wire_destination_countries(account_ids: list[int]):
+    """Distinct real outbound wire destinations for these accounts —
+    backs check_sanctions when a specific country isn't already known."""
+    if not account_ids:
+        return []
+    conn = get_conn()
+    placeholders = ",".join("?" for _ in account_ids)
+    rows = conn.execute(
+        f"SELECT DISTINCT destination_country FROM wire_transfers "
+        f"WHERE source_account_id IN ({placeholders})",
+        account_ids,
+    ).fetchall()
+    conn.close()
+    return [row["destination_country"] for row in rows if row["destination_country"]]
+
 def get_transaction_history(account_id):
 
     conn = sqlite3.connect(DB_PATH)

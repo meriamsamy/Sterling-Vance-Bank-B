@@ -47,19 +47,35 @@ BATCH_SCAN_SCHEMA = {
     "additionalProperties": False,
 }
 
-VALIDATE_INVESTIGATION_OUTPUT_SCHEMA = {
+# --- Investigation tools (read-only) — added for the Planning Agent's
+# Router (Issue #68). Same access model as batch_sanctions_scan: these
+# only make sense for compliance/fraud roles, so they're gated the same
+# way in server.py's list_tools(). No new data or capability beyond what
+# db_access.py and the existing schema already have.
+
+GET_CUSTOMER_ACCOUNTS_SCHEMA = {
     "type": "object",
     "properties": {
-        "success": {
-            "type": "boolean",
-        },
-        "details": {
-            "type": "array",
-            "items": {
-                "type": "string",
-            },
-        },
+        "customer_id": {"type": "integer", "description": "customer_id from the customers table"},
     },
-    "required": ["success", "details"],
+    "required": ["customer_id"],
+    "additionalProperties": False,
+}
+
+GET_TRANSACTION_HISTORY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "account_id": {"type": "integer", "description": "account_id to fetch transaction history for"},
+    },
+    "required": ["account_id"],
+    "additionalProperties": False,
+}
+
+CHECK_SANCTIONS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "destination_country": {"type": "string", "minLength": 2, "maxLength": 2},
+    },
+    "required": ["destination_country"],
     "additionalProperties": False,
 }
