@@ -25,6 +25,8 @@ can pass the toolkit's own placeholder Environment.
 from __future__ import annotations
 
 import sys
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
 _MCP_DIR = Path(__file__).resolve().parent.parent / "mcp"
@@ -34,6 +36,28 @@ if str(_MCP_DIR) not in sys.path:
 import db_access as db  # noqa: E402
 
 from .algorithms import EvaluationEnvironment, RouteDecision, run_lats, run_plan_and_solve, run_tree_of_thoughts
+
+
+@dataclass
+class RoutingTrace:
+    """Records every routing decision dispatch() makes, in the same
+    lightweight style as the forked toolkit's own artifacts/run-*.json
+    (planning_lab/cli.py's save_artifact): a flat list of dicts, no
+    separate logging system. orchestrator.py owns writing this into the
+    run-level trace payload; this class only owns collecting the entries."""
+
+    entries: list[dict] = field(default_factory=list)
+
+    def record(self, decision: RouteDecision) -> None:
+        self.entries.append({
+            "task_id": decision.task_id,
+            "method": decision.method,
+            "reason": decision.reason,
+            "timestamp": time.time(),
+        })
+
+    def as_payload(self) -> list[dict]:
+        return list(self.entries)
 
 # Exact task_id -> method. Anything not listed falls back to the prefix
 # rules below (needed for dynamically-injected tasks like
@@ -76,17 +100,17 @@ def route_subtask(task_id: str) -> RouteDecision:
 
 # ---------------------------------------------------------------------------
 # Direct tool-call handlers — no LLM, no planning algorithm. These call the
-# exact same db_access.py functions mcp/server.py uses for real wires, so
-# "direct" sub-tasks in the DAG and the live MCP server never disagree.
+# exact same db_access.py functions that now back the registered MCP tools
+# get_customer_accounts / get_transaction_history / check_sanctions in
+# mcp/server.py (Issue #68 added those three; previously only get_account
+# and wire_transfer_initiate existed, so "direct" tasks had nothing real to
+# route to and were hitting raw SQL here instead). A "direct" sub-task and
+# the live MCP tool of the same name are now provably the same operation —
+# both call db_access.get_customer_accounts(), db_access.is_sanctioned(),
+# etc. — not two implementations that happen to agree.
 # ---------------------------------------------------------------------------
 def direct_find_accounts(customer_id: int) -> list[dict]:
-    conn = db.get_conn()
-    rows = conn.execute(
-        "SELECT account_id, account_type, balance FROM accounts WHERE customer_id = ?",
-        (customer_id,),
-    ).fetchall()
-    conn.close()
-    return [dict(row) for row in rows]
+    return db.get_customer_accounts(customer_id)
 
 
 def direct_get_transactions(account_id: int) -> str:
@@ -98,20 +122,9 @@ def direct_check_sanctions(destination_country: str) -> bool:
 
 
 def direct_get_destination_countries(account_ids: list[int]) -> list[str]:
-    """Real outbound wire destinations for these accounts, straight from
-    wire_transfers — not invented, not guessed. Empty if the customer has
-    no wire history yet."""
-    if not account_ids:
-        return []
-    conn = db.get_conn()
-    placeholders = ",".join("?" for _ in account_ids)
-    rows = conn.execute(
-        f"SELECT DISTINCT destination_country FROM wire_transfers "
-        f"WHERE source_account_id IN ({placeholders})",
-        account_ids,
-    ).fetchall()
-    conn.close()
-    return [row["destination_country"] for row in rows if row["destination_country"]]
+    """Real outbound wire destinations for these accounts — used when a
+    check_sanctions sub-task isn't given one specific country up front."""
+    return db.get_wire_destination_countries(account_ids)
 
 
 def dispatch(
@@ -124,14 +137,22 @@ def dispatch(
     customer_id: int | None = None,
     destination_country: str | None = None,
     environment: EvaluationEnvironment | None = None,
+    trace: RoutingTrace | None = None,
 ):
     """Execute a sub-task through whatever route_subtask() decided. Direct
     routes bypass the LLM entirely; ps/tot hand off to algorithms.py, which
     hands off to the forked toolkit; lats also needs a real `environment`
     (the grounded one from teammate 3's planning/environment.py) — passed
     in here, never built here.
+
+    If `trace` is given, the routing decision (task_id, method, reason,
+    timestamp) is recorded on it before execution — independent of whether
+    execution succeeds, so a failed sub-task still shows what the router
+    decided and why.
     """
     decision = route_subtask(task_id)
+    if trace is not None:
+        trace.record(decision)
 
     if decision.method == "direct":
         if task_id == "find_accounts":
