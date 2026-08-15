@@ -1,29 +1,33 @@
 """
 [ROUTING LOGIC — locatable concern]
 
-Decides, per sub-task in planning/decomposition.py's InvestigationDAG,
-whether it needs a planning algorithm at all, and if so which one.
-Not every TaskNode should hit an LLM — a lookup is a lookup.
+*** UPDATED to match teammate 1's rewritten decomposition.py ***
+Her TaskDecomposerAdapter/decompose_goal/apply_dynamic_decomposition API
+(the fixed 7-task plan with semantic task_ids like "find_accounts") is
+gone. It's replaced by BankDynamicDecomposition — a fully dynamic planner
+that asks the LLM to choose ONE task at a time (reusing the toolkit's own
+DynamicDecision schema) and hands each one to a caller-supplied
+`execute_task(task: TaskNode, history)` callback. Task ids are now generic
+(dynamic_1, dynamic_2, ...); there is nothing semantic left to match by id.
 
-    find_accounts, get_transactions, check_sanctions   -> direct MCP/db call
-    analyze_wires, analyze_structuring                  -> PS
-    investigate_counterparty_*  (dynamic sub-task)       -> PS
-    combine_evidence                                     -> ToT
-    risk_assessment                                      -> LATS (grounded)
+So routing changed from "look up task_id in a fixed table" to "classify
+the task's actual description text" — the task_id can't tell you anything
+anymore, only what the LLM asked to be done. route_subtask() below takes
+the description string and matches it against the same investigation
+areas her own system prompt lists (accounts, transactions, wire transfers,
+sanctions, structuring, counterparties, relationships, evidence
+consolidation, risk assessment) — same set, same intent, just read from
+free text instead of a fixed id.
 
-This mirrors the problem framing doc 1:1 (section 6, "Router") so a grader
-can check the table against the code without cross-referencing anything else.
-
-OWNERSHIP NOTE: dispatch() takes `environment` as an argument for the "lats"
-route and never constructs one itself. Building the real
-GroundedInvestigationEnvironment is the Self-Correction + Grounding +
-Integration concern's job (planning/environment.py, teammate 3) — this file
-only needs something satisfying algorithms.EvaluationEnvironment. Integration
-wires the real one in; until then, callers (including this file's own tests)
-can pass the toolkit's own placeholder Environment.
+dispatch() now takes a TaskNode directly (the shared schema, per Issue
+#68's "must use the shared task schema" constraint) instead of loose
+positional strings, so orchestrator.py's execute_task callback can hand
+BankDynamicDecomposition's TaskNode straight through with no translation
+layer in between.
 """
 from __future__ import annotations
 
+import re
 import sys
 import time
 from dataclasses import dataclass, field
@@ -36,6 +40,7 @@ if str(_MCP_DIR) not in sys.path:
 import db_access as db  # noqa: E402
 
 from .algorithms import EvaluationEnvironment, RouteDecision, run_lats, run_plan_and_solve, run_tree_of_thoughts
+from .decomposition import TaskNode
 
 
 @dataclass
@@ -43,8 +48,7 @@ class RoutingTrace:
     """Records every routing decision dispatch() makes, in the same
     lightweight style as the forked toolkit's own artifacts/run-*.json
     (planning_lab/cli.py's save_artifact): a flat list of dicts, no
-    separate logging system. orchestrator.py owns writing this into the
-    run-level trace payload; this class only owns collecting the entries."""
+    separate logging system."""
 
     entries: list[dict] = field(default_factory=list)
 
@@ -59,22 +63,26 @@ class RoutingTrace:
     def as_payload(self) -> list[dict]:
         return list(self.entries)
 
-# Exact task_id -> method. Anything not listed falls back to the prefix
-# rules below (needed for dynamically-injected tasks like
-# "investigate_counterparty_ACC_UNKNOWN_99", whose exact id isn't known
-# up front).
-_EXACT_ROUTES: dict[str, str] = {
-    "find_accounts": "direct",
-    "get_transactions": "direct",
-    "check_sanctions": "direct",
-    "analyze_wires": "ps",
-    "analyze_structuring": "ps",
-    "combine_evidence": "tot",
-    "risk_assessment": "lats",
-}
 
-_PREFIX_ROUTES: list[tuple[str, str]] = [
-    ("investigate_counterparty_", "ps"),
+# ---------------------------------------------------------------------------
+# Description classification. Ordered rules, first match wins. Order
+# matters: specific reasoning categories (risk assessment, evidence
+# consolidation, structuring, counterparty/relationship, wire analysis) are
+# checked BEFORE generic lookup keywords (sanction/transaction/account),
+# because a description like "analyze wire transfers for hidden links"
+# contains no lookup keyword but "check destination against sanctions
+# list" should resolve as a deterministic lookup even though it mentions
+# "wire" too — sanctions is checked first for exactly that reason.
+# ---------------------------------------------------------------------------
+_CLASSIFICATION_RULES: list[tuple[str, re.Pattern, str, str | None]] = [
+    ("risk_assessment", re.compile(r"risk assessment|recommendation|final (verdict|decision)", re.IGNORECASE), "lats", None),
+    ("combine_evidence", re.compile(r"consolidat|combine evidence|evidence consolidation", re.IGNORECASE), "tot", None),
+    ("structuring", re.compile(r"structur", re.IGNORECASE), "ps", None),
+    ("counterparty", re.compile(r"counterpart|relationship", re.IGNORECASE), "ps", None),
+    ("sanctions_lookup", re.compile(r"sanction", re.IGNORECASE), "direct", "check_sanctions"),
+    ("wire_analysis", re.compile(r"wire transfer|wire", re.IGNORECASE), "ps", None),
+    ("transactions_lookup", re.compile(r"transaction|deposit history", re.IGNORECASE), "direct", "get_transactions"),
+    ("accounts_lookup", re.compile(r"\baccounts?\b", re.IGNORECASE), "direct", "find_accounts"),
 ]
 
 _REASONS: dict[str, str] = {
@@ -84,30 +92,42 @@ _REASONS: dict[str, str] = {
     "lats": "Final recommendation; a wrong output is costly, so candidates must be scored by real DB feedback, not self-opinion.",
 }
 
+_DEFAULT_METHOD = "ps"  # safest general-purpose reasoning fallback for a description that matched nothing
 
-def route_subtask(task_id: str) -> RouteDecision:
-    if task_id in _EXACT_ROUTES:
-        method = _EXACT_ROUTES[task_id]
-    else:
-        method = next((m for prefix, m in _PREFIX_ROUTES if task_id.startswith(prefix)), None)
-        if method is None:
-            raise ValueError(
-                f"No route defined for task_id={task_id!r}. Add it to _EXACT_ROUTES or "
-                f"_PREFIX_ROUTES in planning/router.py instead of guessing at call sites."
-            )
-    return RouteDecision(task_id=task_id, method=method, reason=_REASONS[method])
+
+@dataclass
+class Classification:
+    method: str
+    direct_operation: str | None
+    reason: str
+    matched_rule: str | None
+
+
+def classify_description(description: str) -> Classification:
+    for rule_name, pattern, method, direct_op in _CLASSIFICATION_RULES:
+        if pattern.search(description):
+            return Classification(method=method, direct_operation=direct_op, reason=_REASONS[method], matched_rule=rule_name)
+    return Classification(
+        method=_DEFAULT_METHOD,
+        direct_operation=None,
+        reason=_REASONS[_DEFAULT_METHOD] + " (no keyword matched; defaulted to PS rather than guessing at a direct call.)",
+        matched_rule=None,
+    )
+
+
+def route_subtask(node: TaskNode) -> RouteDecision:
+    """Takes the shared TaskNode schema directly. Classifies by
+    node.description since task_id (dynamic_1, dynamic_2, ...) carries no
+    semantic meaning under BankDynamicDecomposition."""
+    classification = classify_description(node.description)
+    return RouteDecision(task_id=node.task_id, method=classification.method, reason=classification.reason)
 
 
 # ---------------------------------------------------------------------------
 # Direct tool-call handlers — no LLM, no planning algorithm. These call the
-# exact same db_access.py functions that now back the registered MCP tools
+# exact same db_access.py functions that back the registered MCP tools
 # get_customer_accounts / get_transaction_history / check_sanctions in
-# mcp/server.py (Issue #68 added those three; previously only get_account
-# and wire_transfer_initiate existed, so "direct" tasks had nothing real to
-# route to and were hitting raw SQL here instead). A "direct" sub-task and
-# the live MCP tool of the same name are now provably the same operation —
-# both call db_access.get_customer_accounts(), db_access.is_sanctioned(),
-# etc. — not two implementations that happen to agree.
+# mcp/server.py (added in Issue #68).
 # ---------------------------------------------------------------------------
 def direct_find_accounts(customer_id: int) -> list[dict]:
     return db.get_customer_accounts(customer_id)
@@ -128,8 +148,7 @@ def direct_get_destination_countries(account_ids: list[int]) -> list[str]:
 
 
 def dispatch(
-    task_id: str,
-    instruction: str,
+    node: TaskNode,
     evidence_context: str,
     llm,
     *,
@@ -139,46 +158,46 @@ def dispatch(
     environment: EvaluationEnvironment | None = None,
     trace: RoutingTrace | None = None,
 ):
-    """Execute a sub-task through whatever route_subtask() decided. Direct
-    routes bypass the LLM entirely; ps/tot hand off to algorithms.py, which
-    hands off to the forked toolkit; lats also needs a real `environment`
-    (the grounded one from teammate 3's planning/environment.py) — passed
+    """Execute one TaskNode through whatever route_subtask() decided.
+    Direct routes bypass the LLM entirely; ps/tot hand off to
+    algorithms.py, which hands off to the forked toolkit; lats also needs
+    a real `environment` (teammate 3's planning/environment.py) — passed
     in here, never built here.
 
-    If `trace` is given, the routing decision (task_id, method, reason,
-    timestamp) is recorded on it before execution — independent of whether
-    execution succeeds, so a failed sub-task still shows what the router
-    decided and why.
+    If `trace` is given, the routing decision is recorded before
+    execution, independent of whether execution succeeds.
     """
-    decision = route_subtask(task_id)
+    decision = route_subtask(node)
     if trace is not None:
         trace.record(decision)
 
     if decision.method == "direct":
-        if task_id == "find_accounts":
+        classification = classify_description(node.description)
+        op = classification.direct_operation
+        if op == "find_accounts":
             return direct_find_accounts(customer_id)
-        if task_id == "get_transactions":
-            return direct_get_transactions(account_ids[0])
-        if task_id == "check_sanctions":
+        if op == "get_transactions":
+            return direct_get_transactions((account_ids or [None])[0])
+        if op == "check_sanctions":
             countries = [destination_country] if destination_country else direct_get_destination_countries(account_ids or [])
             if not countries:
                 return {"checked": [], "sanctioned": [], "note": "No outbound wire history for this customer yet."}
             return {"checked": countries, "sanctioned": [c for c in countries if direct_check_sanctions(c)]}
-        raise ValueError(f"No direct handler wired for {task_id!r}")
+        raise ValueError(f"Classified as direct but no direct_operation resolved for: {node.description!r}")
 
     if decision.method == "ps":
-        return run_plan_and_solve(instruction, evidence_context, llm)
+        return run_plan_and_solve(node.description, evidence_context, llm)
 
     if decision.method == "tot":
-        return run_tree_of_thoughts(instruction, evidence_context, llm)
+        return run_tree_of_thoughts(node.description, evidence_context, llm)
 
     if decision.method == "lats":
         if environment is None:
             raise ValueError(
-                "risk_assessment is routed to LATS, which requires a grounded "
-                "`environment` (see planning/environment.py, owned by the "
+                "This task classified as risk_assessment -> LATS, which requires a "
+                "grounded `environment` (see planning/environment.py, owned by the "
                 "Self-Correction + Grounding concern). Pass it in explicitly."
             )
-        return run_lats(instruction, evidence_context, llm, environment)
+        return run_lats(node.description, evidence_context, llm, environment)
 
     raise ValueError(f"Unknown route method: {decision.method!r}")
