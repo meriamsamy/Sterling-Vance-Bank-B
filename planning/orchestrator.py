@@ -1,22 +1,27 @@
 """
-planning/orchestrator.py — connects teammate 1's BankDynamicDecomposition
-(decomposition.py) to teammate 2's router (router.py).
+planning/orchestrator.py — connects teammate 1's two decomposition methods
+(decomposition.py's BankDecompositionAdapter = decomposition-first, and
+dynamic_decomposition.py's BankDynamicDecomposition = dynamic/interleaved)
+to teammate 2's router (router.py).
 
-*** REWRITTEN for her latest decomposition.py ***
-Her file no longer has a fixed decomposition-first plan; it's a fully
-dynamic planner where the LLM chooses one task at a time
-(BankDynamicDecomposition.choose_next_task, reusing the toolkit's real
-DynamicDecision schema) and expects the caller to supply
-`execute_task(task: TaskNode, history) -> observation`. This file builds
-that callback: it classifies+routes the task through router.dispatch(),
-executes it for real (direct db call / PS / ToT / LATS), and returns the
-observation text her run() loop feeds back into the next planning step.
+*** UPDATED ***
+Two entry points now, one per method she actually built — both were
+required by the lab ("both methods, not one"), and she implemented them as
+two separate files rather than one replacing the other:
 
-Nothing in decomposition.py was changed. account_ids/customer_id context
-that used to live on TaskNode itself (a design from a version of
-decomposition.py that no longer exists) is now tracked in a plain dict
-inside run_investigation() instead — TaskNode is intentionally strict
-(extra="forbid") in her version, so no fields were added to it.
+  run_investigation_decomposition_first() -> BankDecompositionAdapter.decompose()
+      + .execute() (full plan up front, parallel ThreadPoolExecutor batches)
+
+  run_investigation_dynamic() -> BankDynamicDecomposition.run()
+      (LLM chooses one task at a time, reacts to each real observation)
+
+Both her callback contracts (execute_task) are plain sync callables, called
+from a worker thread (decomposition-first) or a plain sync loop (dynamic).
+router.dispatch() is properly async now (see its docstring for why), so
+both execute_task closures below call router.dispatch_sync() — the safe
+sync bridge — instead of dispatch() directly.
+
+Neither of her files was changed to build this.
 """
 from __future__ import annotations
 
@@ -25,8 +30,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .decomposition import BankDynamicDecomposition, TaskNode
-from .router import RoutingTrace, classify_description, dispatch, route_subtask
+from .decomposition import BankDecompositionAdapter, TaskNode as DecompFirstTaskNode
+from .dynamic_decomposition import BankDynamicDecomposition, TaskNode as DynamicTaskNode
+from .router import RoutingTrace, classify_description, dispatch_sync, route_subtask
 
 # Same artifacts/ convention the forked toolkit's own cli.py uses
 # (planning_lab/cli.py: save_artifact -> artifacts/run-<timestamp>.json),
@@ -38,65 +44,118 @@ ARTIFACTS_DIR = Path(__file__).resolve().parent.parent / "artifacts"
 
 @dataclass
 class InvestigationRun:
+    mode: str  # "decomposition-first" | "dynamic"
     order_executed: list[str] = field(default_factory=list)
     llm_calls: int = 0
     trace: RoutingTrace = field(default_factory=RoutingTrace)
-    steps: list = field(default_factory=list)  # DynamicStep objects from her DynamicRun
+    detail: dict = field(default_factory=dict)  # mode-specific payload for the artifact
 
 
 def save_run_artifact(run: InvestigationRun, customer_id: int) -> Path:
-    """Persist this run's routing trace (task_id/method/reason/timestamp
-    per sub-task) into artifacts/, same JSON-payload style as the
-    toolkit's own run artifacts — satisfies Issue #68's 'routing decisions
-    are recorded in the execution trace'."""
+    """Persist this run's routing trace into artifacts/, same JSON-payload
+    style as the toolkit's own run artifacts — satisfies Issue #68's
+    'routing decisions are recorded in the execution trace'."""
     ARTIFACTS_DIR.mkdir(exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     path = ARTIFACTS_DIR / f"run-{stamp}.json"
     payload = {
-        "mode": "dynamic",
+        "mode": run.mode,
         "customer_id": customer_id,
         "order_executed": run.order_executed,
         "llm_calls": run.llm_calls,
         "routing_trace": run.trace.as_payload(),
-        "steps": [
-            {"task_id": step.task.task_id, "description": step.task.description,
-             "action_type": step.task.action_type, "observation": step.observation}
-            for step in run.steps
-        ],
+        **run.detail,
     }
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
     return path
 
 
-def run_investigation(
+def _investigation_goal(customer_id: int) -> str:
+    return (
+        f"Investigate customer {customer_id}'s financial activity for suspicious "
+        f"activity and produce a policy-grounded risk recommendation."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Decomposition-first — planning/decomposition.py
+# ---------------------------------------------------------------------------
+def run_investigation_decomposition_first(
+    customer_id: int,
+    llm,
+    environment=None,
+    save_artifact: bool = True,
+) -> InvestigationRun:
+    adapter = BankDecompositionAdapter(llm)
+    dag = adapter.decompose(_investigation_goal(customer_id))
+
+    run = InvestigationRun(mode="decomposition-first")
+    context = {"customer_id": customer_id, "account_ids": []}
+
+    def execute_task(task: DecompFirstTaskNode, dependency_outputs: dict):
+        decision = route_subtask(task)
+        task.action_type = decision.method
+        operation = classify_description(task.description).direct_operation
+
+        needs_accounts = decision.method == "direct" and operation != "find_accounts"
+        if needs_accounts and not context["account_ids"]:
+            return ("No account context yet for this customer — the accounts task "
+                    "must complete before transactions/sanctions lookups scoped to accounts.")
+
+        evidence = "\n".join(f"[{dep}] {out}" for dep, out in dependency_outputs.items()) or "No prior evidence."
+        result = dispatch_sync(
+            task, evidence, llm,
+            account_ids=context["account_ids"],
+            customer_id=context["customer_id"],
+            environment=environment,
+            trace=run.trace,
+        )
+
+        run.order_executed.append(task.task_id)
+        if decision.method != "direct":
+            run.llm_calls += 1
+        if operation == "find_accounts":
+            context["account_ids"] = [row["account_id"] for row in result]
+
+        return result if isinstance(result, str) else str(result)
+
+    outputs = adapter.execute(dag, execute_task)
+
+    run.detail = {
+        "topological_order": dag.topological_order(),
+        "execution_batches": dag.execution_batches(),
+        "tasks": {
+            task_id: {"description": t.description, "action_type": t.action_type,
+                      "dependencies": t.dependencies, "status": t.status, "result": t.result}
+            for task_id, t in dag.nodes.items()
+        },
+        "outputs": outputs,
+    }
+
+    if save_artifact:
+        save_run_artifact(run, customer_id)
+    return run
+
+
+# ---------------------------------------------------------------------------
+# Dynamic / interleaved — planning/dynamic_decomposition.py
+# ---------------------------------------------------------------------------
+def run_investigation_dynamic(
     customer_id: int,
     llm,
     environment=None,
     max_steps: int = 6,
     save_artifact: bool = True,
 ) -> InvestigationRun:
-    """Runs BankDynamicDecomposition against a real customer, routing
-    every LLM-chosen task through the real router + real db_access/MCP
-    tools. This is the dynamic/interleaved method — the LLM sees each
-    real observation before deciding the next task, so it can react to
-    something unexpected (a real unlinked counterparty, a real sanctions
-    hit) instead of following a plan blind to what's actually being found.
-    """
     planner = BankDynamicDecomposition(llm)
-    run = InvestigationRun()
-    # Mutable context the execute_task closure below reads/updates as the
-    # investigation progresses — account_ids only becomes known once the
-    # planner actually asks for accounts, since nothing here is fixed order.
+    run = InvestigationRun(mode="dynamic")
     context = {"customer_id": customer_id, "account_ids": []}
 
-    def execute_task(task: TaskNode, history: list[tuple[str, str]]):
+    def execute_task(task: DynamicTaskNode, history: list[tuple[str, str]]):
         decision = route_subtask(task)
-        task.action_type = decision.method  # the hookup her TaskNode.action_type comment anticipates
+        task.action_type = decision.method
         operation = classify_description(task.description).direct_operation
 
-        # If the LLM asked for something account-scoped before ever asking
-        # for the accounts themselves, don't crash — tell it so, and let
-        # the next planning step react (it sees this observation too).
         needs_accounts = decision.method == "direct" and operation != "find_accounts"
         if needs_accounts and not context["account_ids"]:
             return ("No account context yet for this customer — call a task to "
@@ -104,10 +163,8 @@ def run_investigation(
                     "or sanctions checks scoped to specific accounts.")
 
         evidence = "\n".join(f"[{desc}] {obs}" for desc, obs in history) or "No prior evidence."
-        result = dispatch(
-            task,
-            evidence,
-            llm,
+        result = dispatch_sync(
+            task, evidence, llm,
             account_ids=context["account_ids"],
             customer_id=context["customer_id"],
             environment=environment,
@@ -123,14 +180,19 @@ def run_investigation(
         return result if isinstance(result, str) else str(result)
 
     dynamic_run = planner.run(
-        goal=f"Investigate customer {customer_id}'s financial activity for suspicious "
-             f"activity and produce a policy-grounded risk recommendation.",
+        goal=_investigation_goal(customer_id),
         execute_task=execute_task,
         max_steps=max_steps,
     )
-    run.steps = dynamic_run.steps
+
+    run.detail = {
+        "steps": [
+            {"task_id": step.task.task_id, "description": step.task.description,
+             "action_type": step.task.action_type, "observation": step.observation}
+            for step in dynamic_run.steps
+        ],
+    }
 
     if save_artifact:
         save_run_artifact(run, customer_id)
-
     return run
