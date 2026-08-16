@@ -1,21 +1,26 @@
 """
-Integration tests for orchestrator.py — proves the DAG-to-router wiring
-actually works end to end against the real bank.db, not just each piece
-in isolation. Still no real Groq calls: a single scripted fake LLM stands
-in for every PS/ToT/LATS call, since only the wiring is under test here.
+Integration tests for orchestrator.py — both entry points, end to end
+against the real bank.db. No real Groq calls: scripted fake LLMs.
 """
+import json
+
+from planning.dynamic_decomposition import DynamicDecision
+from planning.orchestrator import run_investigation_decomposition_first, run_investigation_dynamic
+from planning_lab.models import EnvironmentFeedback
 from types import SimpleNamespace
 
-from planning.orchestrator import run_investigation
-from planning_lab.models import EnvironmentFeedback
+
+class AlwaysAcceptEnvironment:
+    def evaluate(self, state: str) -> EnvironmentFeedback:
+        return EnvironmentFeedback(success=True, score=0.9, details=["stub: accepted"])
 
 
-class ScriptedLLM:
-    """One fake that answers every algorithm's call shape (plain .invoke
-    for PS, .with_structured_output for ToT/LATS) so a full DAG run can
-    execute without hitting a real provider. analyze_wires is scripted to
-    report an unlinked counterparty so the dynamic-decomposition hook has
-    something real to react to."""
+# ---------------------------------------------------------------------------
+# Decomposition-first (planning/decomposition.py -> decompose_goal)
+# ---------------------------------------------------------------------------
+class ScriptedPlanLLM:
+    def __init__(self, tasks):
+        self._tasks = tasks
 
     class Structured:
         def __init__(self, owner, schema):
@@ -27,128 +32,197 @@ class ScriptedLLM:
     def with_structured_output(self, schema, *, method):
         return self.Structured(self, schema)
 
-    def structured(self, schema, prompt_text: str):
+    def structured(self, schema, prompt_text):
         name = schema.__name__
+        if name == "GeneratedPlan":
+            return schema(goal="placeholder", tasks=self._tasks)
+        if name == "LATSActionBatch":
+            return schema(actions=[{"action": "commit", "state": "Recommendation: no structuring or sanctions hits found; clear."}])
         if name == "ThoughtCandidates":
             return schema(candidates=["Benign activity", "Structuring pattern"])
         if name == "ThoughtEvaluation":
             return schema(score=0.8, rationale="stub")
-        if name == "LATSActionBatch":
-            return schema(actions=[
-                {"action": "commit", "state": "Recommendation: no structuring or sanctions hits found; clear."},
-            ])
-        if name == "ValueEstimate":
-            return schema(score=0.8)
-        return schema(score=0.5)
+        return schema(score=0.8)
 
     def invoke(self, messages, **kwargs):
-        prompt = messages[-1][1]
-        if "wire transfers for hidden links" in prompt.lower() or "analyze wire transfers" in prompt.lower():
-            return SimpleNamespace(
-                content="PLAN: review wires.\nSOLUTION: found an unlinked counterparty CP-118 not on file; escalate."
-            )
         return SimpleNamespace(content="PLAN: reviewed.\nSOLUTION: no notable findings.")
 
 
-class AlwaysAcceptEnvironment:
-    def evaluate(self, state: str) -> EnvironmentFeedback:
-        return EnvironmentFeedback(success=True, score=0.9, details=["stub: accepted"])
+def _three_task_plan():
+    return [
+        {"id": "t1", "instruction": "Fetch customer accounts", "depends_on": []},
+        {"id": "t2", "instruction": "Check wire transfer destinations against sanctions list", "depends_on": ["t1"]},
+        {"id": "t3", "instruction": "Provide final risk assessment recommendation", "depends_on": ["t2"]},
+    ]
 
 
-def test_decomposition_first_run_executes_all_seven_tasks_in_dependency_order():
-    run = run_investigation(customer_id=1, llm=ScriptedLLM(), environment=AlwaysAcceptEnvironment(), dynamic=False, save_artifact=False)
-    assert run.order_executed[0] == "find_accounts"
-    assert run.order_executed[-1] == "risk_assessment"
-    assert set(run.order_executed) == {
-        "find_accounts", "get_transactions", "analyze_wires",
-        "check_sanctions", "analyze_structuring", "combine_evidence", "risk_assessment",
-    }
-    # decomposition-first never looks at analyze_wires' actual output to replan,
-    # even though this run's script reports a real unlinked counterparty.
-    assert run.dynamic_task_injected is None
-    assert "investigate_counterparty_CP-118" not in run.dag.nodes
+def test_decomposition_first_executes_the_full_plan_in_dependency_order():
+    run = run_investigation_decomposition_first(
+        customer_id=1, llm=ScriptedPlanLLM(_three_task_plan()),
+        environment=AlwaysAcceptEnvironment(), save_artifact=False,
+    )
+    assert run.mode == "decomposition-first"
+    assert run.order_executed == ["t1", "t2", "t3"]
+    assert run.detail["tasks"]["t1"]["action_type"] == "direct"
+    assert run.detail["tasks"]["t2"]["action_type"] == "direct"
+    assert run.detail["tasks"]["t3"]["action_type"] == "lats"
 
 
-def test_dynamic_run_injects_counterparty_task_after_observing_analyze_wires():
-    run = run_investigation(customer_id=1, llm=ScriptedLLM(), environment=AlwaysAcceptEnvironment(), dynamic=True, save_artifact=False)
-    assert run.dynamic_task_injected == "investigate_counterparty_CP-118"
-    assert "investigate_counterparty_CP-118" in run.dag.nodes
-    assert "investigate_counterparty_CP-118" in run.order_executed
-    # the new task must have actually run (not just been injected) before combine_evidence
-    injected_index = run.order_executed.index("investigate_counterparty_CP-118")
-    combine_index = run.order_executed.index("combine_evidence")
-    assert injected_index < combine_index
+def test_decomposition_first_uses_real_account_ids_before_sanctions_check():
+    run = run_investigation_decomposition_first(
+        customer_id=1, llm=ScriptedPlanLLM(_three_task_plan()),
+        environment=AlwaysAcceptEnvironment(), save_artifact=False,
+    )
+    assert "account_id" in run.detail["outputs"]["t1"]
+    assert "checked" in run.detail["outputs"]["t2"]  # ran against real wire_transfers
 
 
-def test_router_annotates_action_type_on_every_executed_node():
-    run = run_investigation(customer_id=1, llm=ScriptedLLM(), environment=AlwaysAcceptEnvironment(), dynamic=False, save_artifact=False)
-    expected = {
-        "find_accounts": "direct", "get_transactions": "direct", "check_sanctions": "direct",
-        "analyze_wires": "ps", "analyze_structuring": "ps",
-        "combine_evidence": "tot", "risk_assessment": "lats",
-    }
-    for task_id, method in expected.items():
-        assert run.dag.nodes[task_id].action_type == method
-        assert run.dag.nodes[task_id].status == "COMPLETED"
-        assert run.dag.nodes[task_id].result is not None
-
-
-def test_check_sanctions_uses_real_account_ids_from_find_accounts():
-    run = run_investigation(customer_id=1, llm=ScriptedLLM(), environment=AlwaysAcceptEnvironment(), dynamic=False, save_artifact=False)
-    accounts_result = run.dag.nodes["find_accounts"].result
-    assert accounts_result and accounts_result[0]["account_id"] == 1
-    sanctions_result = run.dag.nodes["check_sanctions"].result
-    assert "checked" in sanctions_result  # ran against real wire_transfers, not a placeholder
+def test_decomposition_first_runs_independent_branches_as_parallel_batches():
+    parallel_plan = [
+        {"id": "t1", "instruction": "Fetch customer accounts", "depends_on": []},
+        {"id": "t2a", "instruction": "Analyze wire transfers for hidden links", "depends_on": ["t1"]},
+        {"id": "t2b", "instruction": "Analyze deposit structuring patterns", "depends_on": ["t1"]},
+        {"id": "t3", "instruction": "Consolidate evidence from all investigation sources", "depends_on": ["t2a", "t2b"]},
+    ]
+    run = run_investigation_decomposition_first(
+        customer_id=1, llm=ScriptedPlanLLM(parallel_plan),
+        environment=AlwaysAcceptEnvironment(), save_artifact=False,
+    )
+    batches = run.detail["execution_batches"]
+    assert batches[0] == ["t1"]
+    assert set(batches[1]) == {"t2a", "t2b"}  # same generation -> genuinely parallel
+    assert batches[2] == ["t3"]
 
 
 # ---------------------------------------------------------------------------
-# Issue #68 acceptance criteria specific to the Router:
-#   - routing decisions are recorded in the execution trace
-#   - deterministic tasks route to the real registered MCP tools
+# Dynamic / interleaved (planning/dynamic_decomposition.py)
 # ---------------------------------------------------------------------------
-def test_routing_decisions_are_recorded_in_the_trace():
-    run = run_investigation(customer_id=1, llm=ScriptedLLM(), environment=AlwaysAcceptEnvironment(), dynamic=False, save_artifact=False)
-    recorded_ids = [entry["task_id"] for entry in run.trace.as_payload()]
-    assert recorded_ids == run.order_executed
-    for entry in run.trace.as_payload():
-        assert entry["method"] in {"direct", "ps", "tot", "lats"}
-        assert entry["reason"]
-        assert entry["timestamp"] > 0
+class ScriptedDynamicLLM:
+    def __init__(self, decisions):
+        self.decisions = iter(decisions)
+
+    class Structured:
+        def __init__(self, owner, schema):
+            self.owner, self.schema = owner, schema
+
+        def invoke(self, messages, **kwargs):
+            return self.owner.structured(self.schema, messages[-1][1])
+
+    def with_structured_output(self, schema, *, method):
+        return self.Structured(self, schema)
+
+    def structured(self, schema, prompt_text):
+        if schema is DynamicDecision:
+            return next(self.decisions)
+        if schema.__name__ == "LATSActionBatch":
+            return schema(actions=[{"action": "commit", "state": "Recommendation: no structuring or sanctions hits found; clear."}])
+        return schema(score=0.8)
+
+    def invoke(self, messages, **kwargs):
+        return SimpleNamespace(content="PLAN: reviewed.\nSOLUTION: no notable findings.")
+
+
+def _standard_three_step_script():
+    return [
+        DynamicDecision(done=False, next_task="Fetch customer accounts"),
+        DynamicDecision(done=False, next_task="Check wire transfer destinations against sanctions list"),
+        DynamicDecision(done=False, next_task="Provide final risk assessment recommendation"),
+        DynamicDecision(done=True, next_task=""),
+    ]
+
+
+def test_dynamic_investigation_runs_end_to_end():
+    run = run_investigation_dynamic(
+        customer_id=1, llm=ScriptedDynamicLLM(_standard_three_step_script()),
+        environment=AlwaysAcceptEnvironment(), save_artifact=False,
+    )
+    assert run.mode == "dynamic"
+    assert run.order_executed == ["dynamic_1", "dynamic_2", "dynamic_3"]
+    methods = [step["action_type"] for step in run.detail["steps"]]
+    assert methods == ["direct", "direct", "lats"]
+
+
+def test_dynamic_investigation_asks_for_accounts_first_when_skipped():
+    script = [
+        DynamicDecision(done=False, next_task="Retrieve transaction history for account 501"),
+        DynamicDecision(done=True, next_task=""),
+    ]
+    run = run_investigation_dynamic(
+        customer_id=1, llm=ScriptedDynamicLLM(script),
+        environment=AlwaysAcceptEnvironment(), save_artifact=False,
+    )
+    assert "fetch customer accounts first" in run.detail["steps"][0]["observation"].lower()
+
+
+def test_dynamic_investigation_works_with_a_real_async_environment():
+    class RealisticAsyncEnvironment:
+        def __init__(self):
+            self.calls = []
+
+        async def evaluate(self, candidate, task=None, execute_task=None):
+            import asyncio
+            await asyncio.sleep(0)
+            self.calls.append(candidate)
+            return EnvironmentFeedback(success=True, score=0.9, details=["real async"])
+
+    env = RealisticAsyncEnvironment()
+    run = run_investigation_dynamic(
+        customer_id=1, llm=ScriptedDynamicLLM(_standard_three_step_script()),
+        environment=env, save_artifact=False,
+    )
+    assert run.order_executed == ["dynamic_1", "dynamic_2", "dynamic_3"]
+    assert env.calls  # the real async evaluate() genuinely ran
+
+
+# ---------------------------------------------------------------------------
+# Shared: routing trace + artifact persistence (Issue #68 acceptance criteria)
+# ---------------------------------------------------------------------------
+def test_routing_decisions_are_recorded_in_the_trace_for_both_modes():
+    dynamic_run = run_investigation_dynamic(
+        customer_id=1, llm=ScriptedDynamicLLM(_standard_three_step_script()),
+        environment=AlwaysAcceptEnvironment(), save_artifact=False,
+    )
+    decomp_run = run_investigation_decomposition_first(
+        customer_id=1, llm=ScriptedPlanLLM(_three_task_plan()),
+        environment=AlwaysAcceptEnvironment(), save_artifact=False,
+    )
+    for run in (dynamic_run, decomp_run):
+        recorded_ids = [entry["task_id"] for entry in run.trace.as_payload()]
+        assert recorded_ids == run.order_executed
+        for entry in run.trace.as_payload():
+            assert entry["method"] in {"direct", "ps", "tot", "lats"}
+            assert entry["reason"]
+            assert entry["timestamp"] > 0
 
 
 def test_run_artifact_is_written_with_routing_trace(tmp_path, monkeypatch):
-    import json
     import planning.orchestrator as orchestrator_module
     monkeypatch.setattr(orchestrator_module, "ARTIFACTS_DIR", tmp_path)
 
-    run = run_investigation(customer_id=1, llm=ScriptedLLM(), environment=AlwaysAcceptEnvironment(), dynamic=False, save_artifact=True)
+    run_investigation_dynamic(
+        customer_id=1, llm=ScriptedDynamicLLM(_standard_three_step_script()),
+        environment=AlwaysAcceptEnvironment(), save_artifact=True,
+    )
 
     written = list(tmp_path.glob("run-*.json"))
     assert len(written) == 1
     payload = json.loads(written[0].read_text())
-    assert payload["mode"] == "decomposition-first"
+    assert payload["mode"] == "dynamic"
     assert payload["customer_id"] == 1
-    assert len(payload["routing_trace"]) == len(run.order_executed)
-    assert payload["routing_trace"][0]["task_id"] == "find_accounts"
-    assert payload["routing_trace"][0]["method"] == "direct"
+    assert len(payload["routing_trace"]) == 3
 
 
 def test_deterministic_tasks_are_backed_by_the_real_registered_mcp_tools():
-    """find_accounts/get_transactions/check_sanctions must call the exact
-    db_access functions that mcp/server.py's get_customer_accounts,
-    get_transaction_history, and check_sanctions tools call — not a
-    parallel implementation that merely agrees with them today."""
     import sys
     from pathlib import Path
     mcp_dir = Path(__file__).resolve().parent.parent / "mcp"
     if str(mcp_dir) not in sys.path:
         sys.path.insert(0, str(mcp_dir))
-    import server as mcp_server  # the actual MCP server module
+    import server as mcp_server
+    import db_access as db
 
     tool_names = {tool.name for tool in mcp_server.BASE_TOOLS + mcp_server.COMPLIANCE_TOOLS}
     assert {"get_customer_accounts", "get_transaction_history", "check_sanctions"} <= tool_names
 
-    # Same underlying data-layer call, from both the MCP tool and the router.
     from planning.router import direct_find_accounts
-    import db_access as db
     assert direct_find_accounts(1) == db.get_customer_accounts(1)

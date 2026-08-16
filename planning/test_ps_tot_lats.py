@@ -1,77 +1,76 @@
 """
-Tests for the Planning-algorithms concern (PS / ToT / LATS + routing) —
-scope: teammate 2 (Planning Algorithms: PS + ToT + LATS + basic routing).
+Tests for the Planning-algorithms + routing concern.
 
-No real Groq calls here on purpose — same philosophy as the forked
-toolkit's own tests/test_lab.py: fake/recording LLMs that return
-structured, deterministic content so the tests are fast, free, and
-reproducible. Real end-to-end runs against Groq live in planning_eval/.
+*** REWRITTEN: async ***
+router.dispatch() and algorithms.run_plan_and_solve/run_tree_of_thoughts/
+run_lats are now `async def` (see router.py's module docstring for why:
+teammate 3's real Environment.evaluate() is async, and the toolkit's own
+lats() is sync with no await). Tests call them with asyncio.run() from
+plain sync test functions — no pytest-asyncio dependency needed.
 
-Scope note: grounding (planning/environment.py, GroundedInvestigationEnvironment)
-belongs to teammate 3 (Self-Correction + Grounding + Integration). Wherever
-these tests need "an environment" for LATS, they use a minimal in-file fake
-that only satisfies algorithms.EvaluationEnvironment's protocol
-(.evaluate(state) -> EnvironmentFeedback) — proving the interface contract
-without depending on, or duplicating, teammate 3's file.
+No real Groq calls: scripted fake LLMs throughout.
 """
+import asyncio
 from types import SimpleNamespace
 
 import pytest
 
-from planning.router import route_subtask, dispatch
+from planning.decomposition import TaskNode as DecompFirstTaskNode
+from planning.dynamic_decomposition import TaskNode as DynamicTaskNode
+from planning.router import classify_description, route_subtask, dispatch, dispatch_sync, _EnvironmentBridge
 from planning.algorithms import run_plan_and_solve, run_tree_of_thoughts, run_lats
 from planning_lab.models import EnvironmentFeedback
 from planning_lab.algorithms.tree_of_thoughts import ThoughtCandidates, ThoughtEvaluation
-from planning_lab.algorithms.lats import LATSActionBatch, ValueEstimate
+from planning_lab.algorithms.lats import LATSActionBatch
+
+
+def run(coro):
+    """Shorthand for asyncio.run() in test bodies."""
+    return asyncio.run(coro)
 
 
 # ---------------------------------------------------------------------------
-# [ROUTING]
+# [CLASSIFICATION / ROUTING] — pure sync logic, no I/O
 # ---------------------------------------------------------------------------
-def test_router_sends_lookups_direct_and_reasoning_to_the_right_algorithm():
-    assert route_subtask("find_accounts").method == "direct"
-    assert route_subtask("get_transactions").method == "direct"
-    assert route_subtask("check_sanctions").method == "direct"
-    assert route_subtask("analyze_wires").method == "ps"
-    assert route_subtask("analyze_structuring").method == "ps"
-    assert route_subtask("combine_evidence").method == "tot"
-    assert route_subtask("risk_assessment").method == "lats"
+@pytest.mark.parametrize("description,expected_method", [
+    ("Fetch customer accounts", "direct"),
+    ("Retrieve transaction history for account 501", "direct"),
+    ("Check wire transfer destinations against sanctions list", "direct"),
+    ("Analyze wire transfers for hidden links", "ps"),
+    ("Analyze deposit structuring patterns", "ps"),
+    ("Investigate counterparty relationship for CP-118", "ps"),
+    ("Consolidate evidence from all investigation sources", "tot"),
+    ("Provide final AML risk assessment recommendation", "lats"),
+])
+def test_classify_description_matches_investigation_areas(description, expected_method):
+    assert classify_description(description).method == expected_method
 
 
-def test_router_covers_dynamically_injected_counterparty_tasks():
-    # Task ids like this only exist at runtime, injected by
-    # apply_dynamic_decomposition() in planning/decomposition.py — the
-    # router must match them by prefix, not by an exact, pre-known id.
-    decision = route_subtask("investigate_counterparty_ACC_UNKNOWN_99")
-    assert decision.method == "ps"
+def test_unrecognized_description_defaults_to_ps_not_a_crash():
+    result = classify_description("Do something entirely unrelated to banking")
+    assert result.method == "ps"
+    assert "defaulted" in result.reason.lower()
 
 
-def test_router_rejects_unknown_task_ids_instead_of_guessing():
-    with pytest.raises(ValueError, match="No route defined"):
-        route_subtask("some_new_subtask_nobody_registered")
+def test_route_subtask_works_with_either_teammate_1_tasknode_class():
+    # decomposition.py's TaskNode and dynamic_decomposition.py's TaskNode
+    # are two separate classes (both Pydantic, both extra="forbid") — the
+    # router must not care which one it's given, only task_id/description.
+    node_a = DecompFirstTaskNode(task_id="t1", description="Fetch customer accounts")
+    node_b = DynamicTaskNode(task_id="dynamic_1", description="Fetch customer accounts")
+    assert route_subtask(node_a).method == route_subtask(node_b).method == "direct"
 
 
+# ---------------------------------------------------------------------------
+# [ASYNC DISPATCH]
+# ---------------------------------------------------------------------------
 def test_dispatch_requires_an_environment_for_lats_and_says_why():
-    # Integration hasn't wired teammate 3's grounded environment in this
-    # test — dispatch() must fail loudly and explain where it comes from,
-    # rather than silently falling back to something ungrounded.
+    node = DynamicTaskNode(task_id="dynamic_3", description="Provide final risk assessment recommendation")
     with pytest.raises(ValueError, match="planning/environment.py"):
-        dispatch(
-            "risk_assessment",
-            "Produce the final recommendation",
-            "evidence...",
-            llm=None,
-            environment=None,
-        )
+        run(dispatch(node, "evidence...", llm=None, environment=None))
 
 
-# ---------------------------------------------------------------------------
-# [PS] analyze_structuring / analyze_wires
-# ---------------------------------------------------------------------------
 class RecordingLLM:
-    """Mirrors planning_lab's own test style: returns a fixed string,
-    records what it was asked so the test can assert real context was used."""
-
     def __init__(self, content: str):
         self.content = content
         self.prompts: list[str] = []
@@ -83,35 +82,32 @@ class RecordingLLM:
 
 def test_plan_and_solve_runs_on_real_transaction_evidence():
     llm = RecordingLLM("PLAN: inspect near-threshold deposits.\nSOLUTION: 4 deposits of 4,600-4,900 in 10 days match structuring.")
-    evidence = "Type: deposit, Amount: 4800, Source: cash, Time: 2026-07-01\nType: deposit, Amount: 4750, Source: cash, Time: 2026-07-03"
-    result = run_plan_and_solve("Analyze deposit structuring patterns for account 501", evidence, llm)
+    evidence = "Type: deposit, Amount: 4800, Source: cash, Time: 2026-07-01"
+    result = run(run_plan_and_solve("Analyze deposit structuring patterns for account 501", evidence, llm))
     assert "structuring" in result.lower()
-    # The real evidence context, not a placeholder, must have reached the model.
     assert "4800" in llm.prompts[0]
 
 
-def test_dispatch_routes_ps_task_through_plan_and_solve():
+def test_dispatch_routes_ps_classified_task_through_plan_and_solve():
     llm = RecordingLLM("PLAN: review wires.\nSOLUTION: single low-value domestic wire, no red flags.")
-    result = dispatch(
-        "analyze_wires",
-        "Analyze wire transfers for account 501",
-        "1 wire, $200, domestic",
-        llm,
-    )
+    node = DynamicTaskNode(task_id="dynamic_2", description="Analyze wire transfers for hidden links")
+    result = run(dispatch(node, "1 wire, $200, domestic", llm))
+    assert "no red flags" in result.lower()
+
+
+def test_dispatch_sync_bridges_the_coroutine_for_sync_callers():
+    """This is exactly what orchestrator.py's execute_task closures do —
+    calling the async dispatch() from a plain sync function."""
+    llm = RecordingLLM("PLAN: review wires.\nSOLUTION: single low-value domestic wire, no red flags.")
+    node = DecompFirstTaskNode(task_id="t2", description="Analyze wire transfers for hidden links")
+    result = dispatch_sync(node, "1 wire, $200, domestic", llm)
     assert "no red flags" in result.lower()
 
 
 # ---------------------------------------------------------------------------
-# [ToT] combine_evidence — competing explanations
+# [ToT]
 # ---------------------------------------------------------------------------
 class ToTLLM:
-    """Structured-output fake matching planning_lab's own LATSLLM test
-    pattern: with_structured_output(schema) returns a schema-shaped object.
-    Unlike a stub that always returns the same score, this one actually
-    reads the candidate text being evaluated so the search can tell branches
-    apart — otherwise a tie would just preserve generation order and prove
-    nothing about the search picking the evidence-backed branch."""
-
     class Structured:
         def __init__(self, owner, schema):
             self.owner, self.schema = owner, schema
@@ -120,17 +116,12 @@ class ToTLLM:
             return self.owner.structured(self.schema, messages[-1][1])
 
     def with_structured_output(self, schema, *, method):
-        assert method == "json_schema"
         return self.Structured(self, schema)
 
     def structured(self, schema, prompt_text: str):
         if schema is ThoughtCandidates:
             return schema(candidates=["Benign high-volume merchant activity", "Structuring to evade CTR reporting"])
         if schema is ThoughtEvaluation:
-            # The problem statement itself mentions "structuring" as one of
-            # several candidate explanations to consider, so scanning the
-            # whole prompt would score every branch the same. Only the
-            # "Candidate path:" line is the actual thing being judged.
             candidate_line = prompt_text.lower().rsplit("candidate path:", 1)[-1]
             if "structuring" in candidate_line:
                 return schema(score=0.85, rationale="Repeated near-$5,000 deposits match known structuring pattern.")
@@ -138,49 +129,37 @@ class ToTLLM:
         return schema(score=0.5)
 
 
-def test_tree_of_thoughts_prefers_the_evidence_backed_explanation():
-    evidence = "3 deposits of 4,700-4,900 in 6 days; no sanctioned destination; employee unrelated to customer."
-    thoughts = run_tree_of_thoughts(
-        "Determine the most likely explanation for this customer's activity",
-        evidence,
-        ToTLLM(),
-        depth=1,
-        beam_width=2,
-    )
-    assert thoughts, "ToT should keep at least one surviving branch"
-    assert thoughts[0].score >= 0.85
-    assert "structuring" in thoughts[0].state.lower()
-
-
-def test_dispatch_routes_combine_evidence_through_tree_of_thoughts():
-    result = dispatch(
-        "combine_evidence",
-        "Determine the most likely explanation for this customer's activity",
-        "3 deposits of 4,700-4,900 in 6 days",
-        ToTLLM(),
-    )
+def test_dispatch_routes_evidence_consolidation_through_tree_of_thoughts():
+    node = DynamicTaskNode(task_id="dynamic_4", description="Consolidate evidence from all investigation sources")
+    result = run(dispatch(node, "3 deposits of 4,700-4,900 in 6 days", ToTLLM()))
     assert isinstance(result, list) and result
     assert "structuring" in result[0].state.lower()
 
 
 # ---------------------------------------------------------------------------
-# [LATS] risk_assessment
-# Only proves: (a) LATS wiring works, (b) it accepts ANY object satisfying
-# EvaluationEnvironment — the exact contract teammate 3's grounded
-# environment must implement. It does NOT test grounding correctness;
-# that belongs with planning/environment.py's own tests.
+# [LATS + ENVIRONMENT BRIDGE] — the core of this update
 # ---------------------------------------------------------------------------
-class MinimalFakeEnvironment:
-    """The smallest possible object satisfying algorithms.EvaluationEnvironment.
-    Stands in for teammate 3's GroundedInvestigationEnvironment until
-    integration wires the real one — deliberately dumb (fixed feedback),
-    so this test can't be mistaken for a grounding test."""
-
+class SyncFakeEnvironment:
+    """Old-style sync environment — proves the bridge still supports the
+    calling convention used before grounding existed."""
     def __init__(self, feedback: list[EnvironmentFeedback]):
         self._feedback = iter(feedback)
 
     def evaluate(self, state: str) -> EnvironmentFeedback:
         return next(self._feedback)
+
+
+class RealisticAsyncEnvironment:
+    """Mirrors teammate 3's actual planning/environment.py signature:
+    async def evaluate(self, candidate, task=None, execute_task=None)."""
+    def __init__(self):
+        self.calls: list[tuple[str, str | None]] = []
+
+    async def evaluate(self, candidate: str, task=None, execute_task=None) -> EnvironmentFeedback:
+        await asyncio.sleep(0)  # forces a real event-loop hop, not just a plain call
+        self.calls.append((candidate, task))
+        success = "sanctions" in candidate.lower()
+        return EnvironmentFeedback(success=success, score=0.95 if success else 0.2, details=["real async evaluate ran"])
 
 
 class LATSLLM:
@@ -198,40 +177,46 @@ class LATSLLM:
         if schema is LATSActionBatch:
             return schema(actions=[
                 {"action": "weak", "state": "Recommendation: insufficient detail."},
-                {"action": "strong", "state": "Recommendation: customer 7700's wire is a sanctions hit; escalate."},
+                {"action": "strong", "state": "Recommendation: customer's wire is a sanctions hit; escalate."},
             ])
         return schema(score=0.7)
 
     def invoke(self, messages, **kwargs):
-        return SimpleNamespace(content="First branch lacked a definite position; the next branch must commit to one.")
+        return SimpleNamespace(content="First branch lacked a definite position; commit to one next.")
 
 
-def test_lats_wiring_accepts_any_object_matching_the_environment_protocol():
-    environment = MinimalFakeEnvironment([
+def test_environment_bridge_handles_sync_environment_unchanged():
+    bridge = _EnvironmentBridge(SyncFakeEnvironment([EnvironmentFeedback(success=True, score=0.9, details=["ok"])]))
+    feedback = bridge.evaluate("some candidate")
+    assert feedback.success is True
+
+
+def test_environment_bridge_awaits_a_genuinely_async_environment():
+    async_env = RealisticAsyncEnvironment()
+    bridge = _EnvironmentBridge(async_env, task_description="Provide final risk assessment recommendation")
+    feedback = bridge.evaluate("Recommendation: sanctions hit found; escalate.")
+    assert feedback.success is True
+    assert async_env.calls == [("Recommendation: sanctions hit found; escalate.", "Provide final risk assessment recommendation")]
+
+
+def test_dispatch_routes_risk_assessment_through_lats_with_sync_environment():
+    environment = SyncFakeEnvironment([
         EnvironmentFeedback(success=False, score=0.3, details=["stub: insufficient detail"]),
         EnvironmentFeedback(success=True, score=0.95, details=["stub: accepted"]),
     ])
-    result = run_lats(
-        "Produce the final risk_assessment recommendation",
-        "Wire destined for a sanctioned country; no other flags investigated yet.",
-        LATSLLM(),
-        environment,
-        iterations=1,
-        n_actions=2,
-    )
+    node = DynamicTaskNode(task_id="dynamic_5", description="Provide final risk assessment recommendation")
+    result = run(dispatch(node, "Wire to a sanctioned country; no other flags investigated yet.", LATSLLM(), environment=environment))
     assert result.success is True
     assert "sanctions" in result.output.lower()
 
 
-def test_dispatch_routes_risk_assessment_through_lats_when_environment_is_given():
-    environment = MinimalFakeEnvironment([
-        EnvironmentFeedback(success=True, score=0.9, details=["stub: accepted"]),
-    ])
-    result = dispatch(
-        "risk_assessment",
-        "Produce the final risk_assessment recommendation",
-        "evidence...",
-        LATSLLM(),
-        environment=environment,
-    )
+def test_dispatch_routes_risk_assessment_through_lats_with_real_async_environment():
+    """The actual scenario this update exists for: a genuinely async
+    Environment (teammate 3's real signature) plugged straight into
+    dispatch() without either side needing to know about the other."""
+    environment = RealisticAsyncEnvironment()
+    node = DynamicTaskNode(task_id="dynamic_5", description="Provide final risk assessment recommendation")
+    result = run(dispatch(node, "Wire to a sanctioned country.", LATSLLM(), environment=environment))
     assert result.success is True
+    assert "sanctions" in result.output.lower()
+    assert environment.calls  # proves the real async evaluate() actually ran

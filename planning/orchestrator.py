@@ -1,180 +1,198 @@
 """
-planning/orchestrator.py — connects teammate 1's InvestigationDAG
-(decomposition.py) to teammate 2's router (router.py). This is the piece
-that was missing before: something that actually walks
-get_executable_tasks(), calls dispatch() for each one, and feeds results
-back with mark_completed().
+planning/orchestrator.py — connects teammate 1's two decomposition methods
+(decomposition.py's BankDecompositionAdapter = decomposition-first, and
+dynamic_decomposition.py's BankDynamicDecomposition = dynamic/interleaved)
+to teammate 2's router (router.py).
 
-Ownership note: this file sits between two concerns and touches both.
-decomposition.py itself is unchanged except for two additive fields on
-TaskNode (account_ids, destination_country) — no cycle-check or
-decomposition logic was touched. Recommend teammate 1 reviews this PR
-since it drives her DAG; teammate 3 should review the LATS/environment
-plumbing once planning/environment.py exists.
+*** UPDATED ***
+Two entry points now, one per method she actually built — both were
+required by the lab ("both methods, not one"), and she implemented them as
+two separate files rather than one replacing the other:
 
-Demonstrates BOTH decomposition methods on the same real request type,
-which the lab requires:
-- run_investigation(..., dynamic=False): decomposition-first — the full
-  7-task plan from decompose_goal() is built up front, then executed in
-  topological batches, blind to what analyze_wires finds.
-- run_investigation(..., dynamic=True): dynamic/interleaved — after
-  analyze_wires actually executes, its real output is inspected and
-  apply_dynamic_decomposition() can inject a new counterparty sub-task
-  that decomposition-first would never have planned for.
+  run_investigation_decomposition_first() -> BankDecompositionAdapter.decompose()
+      + .execute() (full plan up front, parallel ThreadPoolExecutor batches)
+
+  run_investigation_dynamic() -> BankDynamicDecomposition.run()
+      (LLM chooses one task at a time, reacts to each real observation)
+
+Both her callback contracts (execute_task) are plain sync callables, called
+from a worker thread (decomposition-first) or a plain sync loop (dynamic).
+router.dispatch() is properly async now (see its docstring for why), so
+both execute_task closures below call router.dispatch_sync() — the safe
+sync bridge — instead of dispatch() directly.
+
+Neither of her files was changed to build this.
 """
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .decomposition import InvestigationDAG, TaskDecomposerAdapter, TaskNode
-from .router import RoutingTrace, dispatch, route_subtask
+from .decomposition import BankDecompositionAdapter, TaskNode as DecompFirstTaskNode
+from .dynamic_decomposition import BankDynamicDecomposition, TaskNode as DynamicTaskNode
+from .router import RoutingTrace, classify_description, dispatch_sync, route_subtask
 
 # Same artifacts/ convention the forked toolkit's own cli.py uses
 # (planning_lab/cli.py: save_artifact -> artifacts/run-<timestamp>.json),
-# extended with a routing_trace field rather than a second logging system.
-# Resolved against THIS repo's root, not the toolkit's — the toolkit is
-# pip-installed (git+...), so its own ROOT would resolve inside
-# site-packages if we called its save_artifact() directly.
+# resolved against THIS repo's root (the toolkit is pip-installed, so its
+# own ROOT would resolve inside site-packages if we called its
+# save_artifact() directly).
 ARTIFACTS_DIR = Path(__file__).resolve().parent.parent / "artifacts"
-
-# Very small, literal parse of analyze_wires' free-text PS output looking
-# for something like "counterparty ACC_UNKNOWN_99" or "unknown counterparty
-# CP-118". This is the "early sub-task result reshaping what comes next"
-# trigger the lab asks for — kept intentionally simple since it only
-# gates whether apply_dynamic_decomposition() fires, not a decision itself.
-_COUNTERPARTY_PATTERN = re.compile(
-    r"(?:unlinked|unknown|unrecognized)\s+counterpart(?:y|ies)[:\s]+([A-Z0-9_\-]+)",
-    re.IGNORECASE,
-)
-
-
-def _extract_unlinked_counterparty(analyze_wires_output: str) -> str | None:
-    if not isinstance(analyze_wires_output, str):
-        return None
-    match = _COUNTERPARTY_PATTERN.search(analyze_wires_output)
-    return match.group(1) if match else None
 
 
 @dataclass
 class InvestigationRun:
-    dag: InvestigationDAG
-    llm_calls: int = 0
-    tokens_estimate: int = 0
+    mode: str  # "decomposition-first" | "dynamic"
     order_executed: list[str] = field(default_factory=list)
-    dynamic_task_injected: str | None = None
+    llm_calls: int = 0
     trace: RoutingTrace = field(default_factory=RoutingTrace)
+    detail: dict = field(default_factory=dict)  # mode-specific payload for the artifact
 
 
-def save_run_artifact(run: InvestigationRun, customer_id: int, dynamic: bool) -> Path:
-    """Persist this run's routing trace (task_id/method/reason/timestamp
-    per sub-task) into artifacts/, same JSON-payload style as the
-    toolkit's own run artifacts — satisfies 'routing decisions are
-    recorded in the execution trace' (Issue #68)."""
+def save_run_artifact(run: InvestigationRun, customer_id: int) -> Path:
+    """Persist this run's routing trace into artifacts/, same JSON-payload
+    style as the toolkit's own run artifacts — satisfies Issue #68's
+    'routing decisions are recorded in the execution trace'."""
     ARTIFACTS_DIR.mkdir(exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     path = ARTIFACTS_DIR / f"run-{stamp}.json"
     payload = {
-        "mode": "dynamic" if dynamic else "decomposition-first",
+        "mode": run.mode,
         "customer_id": customer_id,
         "order_executed": run.order_executed,
-        "dynamic_task_injected": run.dynamic_task_injected,
         "llm_calls": run.llm_calls,
         "routing_trace": run.trace.as_payload(),
-        "results": {task_id: run.dag.nodes[task_id].result for task_id in run.order_executed},
+        **run.detail,
     }
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
     return path
 
 
-def _evidence_context(dag: InvestigationDAG, node: TaskNode) -> str:
-    """Join completed dependency results into the context a sub-task's
-    algorithm (PS/ToT/LATS) reasons over. Direct-route dependency results
-    are dicts/lists (real db rows); str() is fine, they aren't fed back
-    into a prompt that would displace real data with a summary."""
-    if not node.dependencies:
-        return "No prior evidence — this is a root sub-task."
-    parts = []
-    for dep_id in node.dependencies:
-        dep = dag.nodes.get(dep_id)
-        if dep and dep.result is not None:
-            parts.append(f"[{dep_id}] {dep.result}")
-    return "\n".join(parts) or "Dependencies completed with no reportable output."
+def _investigation_goal(customer_id: int) -> str:
+    return (
+        f"Investigate customer {customer_id}'s financial activity for suspicious "
+        f"activity and produce a policy-grounded risk recommendation."
+    )
 
 
-def run_investigation(
+# ---------------------------------------------------------------------------
+# Decomposition-first — planning/decomposition.py
+# ---------------------------------------------------------------------------
+def run_investigation_decomposition_first(
     customer_id: int,
     llm,
     environment=None,
-    dynamic: bool = True,
     save_artifact: bool = True,
 ) -> InvestigationRun:
-    """Run the full investigation DAG for one customer.
+    adapter = BankDecompositionAdapter(llm)
+    dag = adapter.decompose(_investigation_goal(customer_id))
 
-    dynamic=True  -> interleaved: apply_dynamic_decomposition() can inject
-                      investigate_counterparty_* tasks after analyze_wires
-                      actually runs (see module docstring).
-    dynamic=False -> decomposition-first: the initial 7-task plan from
-                      decompose_goal() is executed as-is; a real
-                      counterparty discovery is logged but never acted on,
-                      which is the divergence case the lab asks to show.
-    save_artifact -> writes the run's routing trace to artifacts/ when
-                      True (default). Tests set this False to avoid
-                      littering the repo with run-*.json files.
-    """
-    dag = InvestigationDAG()
-    adapter = TaskDecomposerAdapter(dag)
-    adapter.decompose_goal(str(customer_id))
+    run = InvestigationRun(mode="decomposition-first")
+    context = {"customer_id": customer_id, "account_ids": []}
 
-    run = InvestigationRun(dag=dag)
-    context = {"customer_id": customer_id, "account_ids": [], "destination_countries": []}
+    def execute_task(task: DecompFirstTaskNode, dependency_outputs: dict):
+        decision = route_subtask(task)
+        task.action_type = decision.method
+        operation = classify_description(task.description).direct_operation
 
-    while True:
-        executable = dag.get_executable_tasks()
-        if not executable:
-            break
-        for node in executable:
-            node.status = "IN_PROGRESS"
-            decision = route_subtask(node.task_id)
-            node.action_type = decision.method  # the hookup teammate 1 already anticipated
+        needs_accounts = decision.method == "direct" and operation != "find_accounts"
+        if needs_accounts and not context["account_ids"]:
+            return ("No account context yet for this customer — the accounts task "
+                    "must complete before transactions/sanctions lookups scoped to accounts.")
 
-            evidence = _evidence_context(dag, node)
-            result = dispatch(
-                node.task_id,
-                node.description,
-                evidence,
-                llm,
-                account_ids=node.account_ids or context["account_ids"],
-                customer_id=context["customer_id"],
-                destination_country=node.destination_country,
-                environment=environment,
-                trace=run.trace,
-            )
-            dag.mark_completed(node.task_id, result)
-            run.order_executed.append(node.task_id)
-            if decision.method != "direct":
-                run.llm_calls += 1
+        evidence = "\n".join(f"[{dep}] {out}" for dep, out in dependency_outputs.items()) or "No prior evidence."
+        result = dispatch_sync(
+            task, evidence, llm,
+            account_ids=context["account_ids"],
+            customer_id=context["customer_id"],
+            environment=environment,
+            trace=run.trace,
+        )
 
-            # Propagate discovered context to sub-tasks that still need it.
-            if node.task_id == "find_accounts":
-                context["account_ids"] = [row["account_id"] for row in result]
-            if node.task_id == "check_sanctions":
-                context["destination_countries"] = result.get("checked", [])
+        run.order_executed.append(task.task_id)
+        if decision.method != "direct":
+            run.llm_calls += 1
+        if operation == "find_accounts":
+            context["account_ids"] = [row["account_id"] for row in result]
 
-            # --- [DYNAMIC DECOMPOSITION HOOK] ---
-            # Only wired up when dynamic=True. decomposition-first mode
-            # deliberately skips this so the two modes can be compared on
-            # the same request (see README's comparison table).
-            if dynamic and node.task_id == "analyze_wires":
-                counterparty = _extract_unlinked_counterparty(result)
-                if counterparty:
-                    adapter.apply_dynamic_decomposition(node, {"unlinked_counterparty": counterparty})
-                    run.dynamic_task_injected = f"investigate_counterparty_{counterparty}"
+        return result if isinstance(result, str) else str(result)
+
+    outputs = adapter.execute(dag, execute_task)
+
+    run.detail = {
+        "topological_order": dag.topological_order(),
+        "execution_batches": dag.execution_batches(),
+        "tasks": {
+            task_id: {"description": t.description, "action_type": t.action_type,
+                      "dependencies": t.dependencies, "status": t.status, "result": t.result}
+            for task_id, t in dag.nodes.items()
+        },
+        "outputs": outputs,
+    }
 
     if save_artifact:
-        save_run_artifact(run, customer_id, dynamic)
+        save_run_artifact(run, customer_id)
+    return run
 
+
+# ---------------------------------------------------------------------------
+# Dynamic / interleaved — planning/dynamic_decomposition.py
+# ---------------------------------------------------------------------------
+def run_investigation_dynamic(
+    customer_id: int,
+    llm,
+    environment=None,
+    max_steps: int = 6,
+    save_artifact: bool = True,
+) -> InvestigationRun:
+    planner = BankDynamicDecomposition(llm)
+    run = InvestigationRun(mode="dynamic")
+    context = {"customer_id": customer_id, "account_ids": []}
+
+    def execute_task(task: DynamicTaskNode, history: list[tuple[str, str]]):
+        decision = route_subtask(task)
+        task.action_type = decision.method
+        operation = classify_description(task.description).direct_operation
+
+        needs_accounts = decision.method == "direct" and operation != "find_accounts"
+        if needs_accounts and not context["account_ids"]:
+            return ("No account context yet for this customer — call a task to "
+                    "fetch customer accounts first before requesting transactions "
+                    "or sanctions checks scoped to specific accounts.")
+
+        evidence = "\n".join(f"[{desc}] {obs}" for desc, obs in history) or "No prior evidence."
+        result = dispatch_sync(
+            task, evidence, llm,
+            account_ids=context["account_ids"],
+            customer_id=context["customer_id"],
+            environment=environment,
+            trace=run.trace,
+        )
+
+        run.order_executed.append(task.task_id)
+        if decision.method != "direct":
+            run.llm_calls += 1
+        if operation == "find_accounts":
+            context["account_ids"] = [row["account_id"] for row in result]
+
+        return result if isinstance(result, str) else str(result)
+
+    dynamic_run = planner.run(
+        goal=_investigation_goal(customer_id),
+        execute_task=execute_task,
+        max_steps=max_steps,
+    )
+
+    run.detail = {
+        "steps": [
+            {"task_id": step.task.task_id, "description": step.task.description,
+             "action_type": step.task.action_type, "observation": step.observation}
+            for step in dynamic_run.steps
+        ],
+    }
+
+    if save_artifact:
+        save_run_artifact(run, customer_id)
     return run

@@ -1,30 +1,46 @@
 """
 [ROUTING LOGIC — locatable concern]
 
-Decides, per sub-task in planning/decomposition.py's InvestigationDAG,
-whether it needs a planning algorithm at all, and if so which one.
-Not every TaskNode should hit an LLM — a lookup is a lookup.
+Classifies each investigation TaskNode by its description text (task_ids
+are generic — "dynamic_1" under BankDynamicDecomposition, "t1"/"t2" under
+decompose_goal's decomposition-first plans — neither carries meaning) and
+executes it through the right strategy: a direct MCP/db call, PS, ToT, or
+LATS.
 
-    find_accounts, get_transactions, check_sanctions   -> direct MCP/db call
-    analyze_wires, analyze_structuring                  -> PS
-    investigate_counterparty_*  (dynamic sub-task)       -> PS
-    combine_evidence                                     -> ToT
-    risk_assessment                                      -> LATS (grounded)
+*** UPDATED: async, and wired to teammate 3's real (async) Environment ***
 
-This mirrors the problem framing doc 1:1 (section 6, "Router") so a grader
-can check the table against the code without cross-referencing anything else.
+Two things forced this update, discovered by actually checking the live
+repo instead of assuming:
 
-OWNERSHIP NOTE: dispatch() takes `environment` as an argument for the "lats"
-route and never constructs one itself. Building the real
-GroundedInvestigationEnvironment is the Self-Correction + Grounding +
-Integration concern's job (planning/environment.py, teammate 3) — this file
-only needs something satisfying algorithms.EvaluationEnvironment. Integration
-wires the real one in; until then, callers (including this file's own tests)
-can pass the toolkit's own placeholder Environment.
+1. planning/environment.py's real Environment.evaluate() is `async def`
+   (it awaits real MCP tool calls). The toolkit's own lats() is plain sync
+   and calls `environment.evaluate(state)` with no await — so a naive
+   async Environment would just hand back an unexecuted coroutine and
+   silently break LATS. _EnvironmentBridge below fixes that without
+   touching the toolkit's lats() implementation at all (still called
+   as-is from algorithms.run_lats, inside asyncio.to_thread — see that
+   file's docstring).
+
+2. BOTH of teammate 1's decomposition entry points call execute_task
+   SYNCHRONOUSLY, not awaited:
+     - decomposition.py's BankDecompositionAdapter.execute() calls it from
+       ThreadPoolExecutor worker threads
+     - dynamic_decomposition.py's BankDynamicDecomposition.run() calls it
+       from a plain sync loop
+   So dispatch() itself needed to become properly async (to await
+   run_lats/run_plan_and_solve/run_tree_of_thoughts, which are now async —
+   see algorithms.py), but orchestrator.py's execute_task callbacks handed
+   to her code still need to be plain sync callables. dispatch_sync() below
+   is that bridge: it runs dispatch()'s coroutine to completion safely,
+   whether or not the calling thread already has an event loop running.
 """
 from __future__ import annotations
 
+import asyncio
+import inspect
+import re
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -36,6 +52,7 @@ if str(_MCP_DIR) not in sys.path:
 import db_access as db  # noqa: E402
 
 from .algorithms import EvaluationEnvironment, RouteDecision, run_lats, run_plan_and_solve, run_tree_of_thoughts
+from .decomposition import TaskNode
 
 
 @dataclass
@@ -43,8 +60,7 @@ class RoutingTrace:
     """Records every routing decision dispatch() makes, in the same
     lightweight style as the forked toolkit's own artifacts/run-*.json
     (planning_lab/cli.py's save_artifact): a flat list of dicts, no
-    separate logging system. orchestrator.py owns writing this into the
-    run-level trace payload; this class only owns collecting the entries."""
+    separate logging system."""
 
     entries: list[dict] = field(default_factory=list)
 
@@ -59,22 +75,24 @@ class RoutingTrace:
     def as_payload(self) -> list[dict]:
         return list(self.entries)
 
-# Exact task_id -> method. Anything not listed falls back to the prefix
-# rules below (needed for dynamically-injected tasks like
-# "investigate_counterparty_ACC_UNKNOWN_99", whose exact id isn't known
-# up front).
-_EXACT_ROUTES: dict[str, str] = {
-    "find_accounts": "direct",
-    "get_transactions": "direct",
-    "check_sanctions": "direct",
-    "analyze_wires": "ps",
-    "analyze_structuring": "ps",
-    "combine_evidence": "tot",
-    "risk_assessment": "lats",
-}
 
-_PREFIX_ROUTES: list[tuple[str, str]] = [
-    ("investigate_counterparty_", "ps"),
+# ---------------------------------------------------------------------------
+# Description classification. Ordered rules, first match wins. Specific
+# reasoning categories (risk assessment, evidence consolidation,
+# structuring, counterparty/relationship, wire analysis) are checked
+# BEFORE generic lookup keywords (sanction/transaction/account), because a
+# description like "check destination against sanctions list" should
+# resolve as a deterministic lookup even if it also mentions "wire".
+# ---------------------------------------------------------------------------
+_CLASSIFICATION_RULES: list[tuple[str, re.Pattern, str, str | None]] = [
+    ("risk_assessment", re.compile(r"risk assessment|recommendation|final (verdict|decision)", re.IGNORECASE), "lats", None),
+    ("combine_evidence", re.compile(r"consolidat|combine evidence|evidence consolidation", re.IGNORECASE), "tot", None),
+    ("structuring", re.compile(r"structur", re.IGNORECASE), "ps", None),
+    ("counterparty", re.compile(r"counterpart|relationship", re.IGNORECASE), "ps", None),
+    ("sanctions_lookup", re.compile(r"sanction", re.IGNORECASE), "direct", "check_sanctions"),
+    ("wire_analysis", re.compile(r"wire transfer|wire", re.IGNORECASE), "ps", None),
+    ("transactions_lookup", re.compile(r"transaction|deposit history", re.IGNORECASE), "direct", "get_transactions"),
+    ("accounts_lookup", re.compile(r"\baccounts?\b", re.IGNORECASE), "direct", "find_accounts"),
 ]
 
 _REASONS: dict[str, str] = {
@@ -84,30 +102,38 @@ _REASONS: dict[str, str] = {
     "lats": "Final recommendation; a wrong output is costly, so candidates must be scored by real DB feedback, not self-opinion.",
 }
 
+_DEFAULT_METHOD = "ps"  # safest general-purpose reasoning fallback for a description that matched nothing
 
-def route_subtask(task_id: str) -> RouteDecision:
-    if task_id in _EXACT_ROUTES:
-        method = _EXACT_ROUTES[task_id]
-    else:
-        method = next((m for prefix, m in _PREFIX_ROUTES if task_id.startswith(prefix)), None)
-        if method is None:
-            raise ValueError(
-                f"No route defined for task_id={task_id!r}. Add it to _EXACT_ROUTES or "
-                f"_PREFIX_ROUTES in planning/router.py instead of guessing at call sites."
-            )
-    return RouteDecision(task_id=task_id, method=method, reason=_REASONS[method])
+
+@dataclass
+class Classification:
+    method: str
+    direct_operation: str | None
+    reason: str
+    matched_rule: str | None
+
+
+def classify_description(description: str) -> Classification:
+    for rule_name, pattern, method, direct_op in _CLASSIFICATION_RULES:
+        if pattern.search(description):
+            return Classification(method=method, direct_operation=direct_op, reason=_REASONS[method], matched_rule=rule_name)
+    return Classification(
+        method=_DEFAULT_METHOD,
+        direct_operation=None,
+        reason=_REASONS[_DEFAULT_METHOD] + " (no keyword matched; defaulted to PS rather than guessing at a direct call.)",
+        matched_rule=None,
+    )
+
+
+def route_subtask(node: TaskNode) -> RouteDecision:
+    classification = classify_description(node.description)
+    return RouteDecision(task_id=node.task_id, method=classification.method, reason=classification.reason)
 
 
 # ---------------------------------------------------------------------------
-# Direct tool-call handlers — no LLM, no planning algorithm. These call the
-# exact same db_access.py functions that now back the registered MCP tools
-# get_customer_accounts / get_transaction_history / check_sanctions in
-# mcp/server.py (Issue #68 added those three; previously only get_account
-# and wire_transfer_initiate existed, so "direct" tasks had nothing real to
-# route to and were hitting raw SQL here instead). A "direct" sub-task and
-# the live MCP tool of the same name are now provably the same operation —
-# both call db_access.get_customer_accounts(), db_access.is_sanctioned(),
-# etc. — not two implementations that happen to agree.
+# Direct tool-call handlers — no LLM, no planning algorithm. Call the exact
+# db_access.py functions that back the registered MCP tools
+# get_customer_accounts / get_transaction_history / check_sanctions.
 # ---------------------------------------------------------------------------
 def direct_find_accounts(customer_id: int) -> list[dict]:
     return db.get_customer_accounts(customer_id)
@@ -122,63 +148,117 @@ def direct_check_sanctions(destination_country: str) -> bool:
 
 
 def direct_get_destination_countries(account_ids: list[int]) -> list[str]:
-    """Real outbound wire destinations for these accounts — used when a
-    check_sanctions sub-task isn't given one specific country up front."""
     return db.get_wire_destination_countries(account_ids)
 
 
-def dispatch(
-    task_id: str,
-    instruction: str,
+# ---------------------------------------------------------------------------
+# [ASYNC <-> SYNC ENVIRONMENT BRIDGE]
+# Wraps whatever `environment` object dispatch() is given so it always
+# presents the sync `.evaluate(state) -> EnvironmentFeedback` shape the
+# toolkit's lats() expects, regardless of whether the real object underneath
+# is teammate 3's async Environment (planning/environment.py) or a plain
+# sync fake (used in this file's own tests / before grounding existed).
+# Detection is automatic (inspect.iscoroutinefunction), so neither side has
+# to know about the other's calling convention.
+# ---------------------------------------------------------------------------
+class _EnvironmentBridge:
+    def __init__(self, environment, task_description: str | None = None):
+        self._environment = environment
+        self._task_description = task_description
+        self._is_async = inspect.iscoroutinefunction(environment.evaluate)
+
+    def evaluate(self, state: str):
+        if not self._is_async:
+            return self._environment.evaluate(state)
+        # We're always called from inside a worker thread here (algorithms.
+        # run_lats wraps the whole toolkit lats() call in asyncio.to_thread),
+        # so this thread has no event loop of its own — asyncio.run() is safe.
+        try:
+            return asyncio.run(self._environment.evaluate(state, task=self._task_description))
+        except TypeError:
+            # Her evaluate() signature might not accept `task=`; fall back
+            # to the minimal single-arg call rather than hard-failing.
+            return asyncio.run(self._environment.evaluate(state))
+
+
+def _run_coro_sync(coro):
+    """Runs an async coroutine to completion from a plain sync caller.
+    Used by dispatch_sync() so dispatch() can stay properly async while
+    still plugging directly into both of teammate 1's sync execute_task
+    contracts (ThreadPoolExecutor workers in decomposition.py, and a plain
+    sync loop in dynamic_decomposition.py)."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    # A loop is already running in this thread (shouldn't happen given both
+    # of her callback contracts are sync, but handled rather than crashing).
+    box: dict = {}
+    def _runner():
+        box["value"] = asyncio.run(coro)
+    thread = threading.Thread(target=_runner)
+    thread.start()
+    thread.join()
+    return box["value"]
+
+
+async def dispatch(
+    node: TaskNode,
     evidence_context: str,
     llm,
     *,
     account_ids: list[int] | None = None,
     customer_id: int | None = None,
     destination_country: str | None = None,
-    environment: EvaluationEnvironment | None = None,
+    environment=None,
     trace: RoutingTrace | None = None,
 ):
-    """Execute a sub-task through whatever route_subtask() decided. Direct
-    routes bypass the LLM entirely; ps/tot hand off to algorithms.py, which
-    hands off to the forked toolkit; lats also needs a real `environment`
-    (the grounded one from teammate 3's planning/environment.py) — passed
-    in here, never built here.
-
-    If `trace` is given, the routing decision (task_id, method, reason,
-    timestamp) is recorded on it before execution — independent of whether
-    execution succeeds, so a failed sub-task still shows what the router
-    decided and why.
+    """Execute one TaskNode through whatever route_subtask() decided.
+    `environment` may be teammate 3's real async Environment or a sync
+    fake — either works, see _EnvironmentBridge above.
     """
-    decision = route_subtask(task_id)
+    decision = route_subtask(node)
     if trace is not None:
         trace.record(decision)
 
     if decision.method == "direct":
-        if task_id == "find_accounts":
-            return direct_find_accounts(customer_id)
-        if task_id == "get_transactions":
-            return direct_get_transactions(account_ids[0])
-        if task_id == "check_sanctions":
-            countries = [destination_country] if destination_country else direct_get_destination_countries(account_ids or [])
+        classification = classify_description(node.description)
+        op = classification.direct_operation
+        if op == "find_accounts":
+            return await asyncio.to_thread(direct_find_accounts, customer_id)
+        if op == "get_transactions":
+            return await asyncio.to_thread(direct_get_transactions, (account_ids or [None])[0])
+        if op == "check_sanctions":
+            countries = [destination_country] if destination_country else await asyncio.to_thread(direct_get_destination_countries, account_ids or [])
             if not countries:
                 return {"checked": [], "sanctioned": [], "note": "No outbound wire history for this customer yet."}
-            return {"checked": countries, "sanctioned": [c for c in countries if direct_check_sanctions(c)]}
-        raise ValueError(f"No direct handler wired for {task_id!r}")
+            sanctioned = [c for c in countries if await asyncio.to_thread(direct_check_sanctions, c)]
+            return {"checked": countries, "sanctioned": sanctioned}
+        raise ValueError(f"Classified as direct but no direct_operation resolved for: {node.description!r}")
 
     if decision.method == "ps":
-        return run_plan_and_solve(instruction, evidence_context, llm)
+        return await run_plan_and_solve(node.description, evidence_context, llm)
 
     if decision.method == "tot":
-        return run_tree_of_thoughts(instruction, evidence_context, llm)
+        return await run_tree_of_thoughts(node.description, evidence_context, llm)
 
     if decision.method == "lats":
         if environment is None:
             raise ValueError(
-                "risk_assessment is routed to LATS, which requires a grounded "
-                "`environment` (see planning/environment.py, owned by the "
+                "This task classified as risk_assessment -> LATS, which requires a "
+                "grounded `environment` (see planning/environment.py, owned by the "
                 "Self-Correction + Grounding concern). Pass it in explicitly."
             )
-        return run_lats(instruction, evidence_context, llm, environment)
+        bridge = _EnvironmentBridge(environment, task_description=node.description)
+        return await run_lats(node.description, evidence_context, llm, bridge)
 
     raise ValueError(f"Unknown route method: {decision.method!r}")
+
+
+def dispatch_sync(node: TaskNode, evidence_context: str, llm, **kwargs):
+    """Sync-callable wrapper around dispatch(), for the two places that
+    need a plain sync callback: decomposition.py's BankDecompositionAdapter
+    (called from ThreadPoolExecutor workers) and dynamic_decomposition.py's
+    BankDynamicDecomposition (called from a plain sync loop). Both live in
+    orchestrator.py."""
+    return _run_coro_sync(dispatch(node, evidence_context, llm, **kwargs))
