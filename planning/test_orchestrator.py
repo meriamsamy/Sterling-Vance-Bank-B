@@ -1,113 +1,27 @@
 """
-Tests for the Planning-algorithms + routing concern.
-
-*** REWRITTEN: async ***
-router.dispatch() and algorithms.run_plan_and_solve/run_tree_of_thoughts/
-run_lats are now `async def` (see router.py's module docstring for why:
-teammate 3's real Environment.evaluate() is async, and the toolkit's own
-lats() is sync with no await). Tests call them with asyncio.run() from
-plain sync test functions — no pytest-asyncio dependency needed.
-
-No real Groq calls: scripted fake LLMs throughout.
+Integration tests for orchestrator.py — both entry points, end to end
+against the real bank.db. No real Groq calls: scripted fake LLMs.
 """
-import asyncio
+import json
+
+from planning.dynamic_decomposition import DynamicDecision
+from planning.orchestrator import run_investigation_decomposition_first, run_investigation_dynamic
+from planning_lab.models import EnvironmentFeedback
 from types import SimpleNamespace
 
-import pytest
 
-from planning.decomposition import TaskNode as DecompFirstTaskNode
-from planning.dynamic_decomposition import TaskNode as DynamicTaskNode
-from planning.router import classify_description, route_subtask, dispatch, dispatch_sync, _EnvironmentBridge
-from planning.algorithms import run_plan_and_solve, run_tree_of_thoughts, run_lats
-from planning_lab.models import EnvironmentFeedback
-from planning_lab.algorithms.tree_of_thoughts import ThoughtCandidates, ThoughtEvaluation
-from planning_lab.algorithms.lats import LATSActionBatch
-
-
-def run(coro):
-    """Shorthand for asyncio.run() in test bodies."""
-    return asyncio.run(coro)
+class AlwaysAcceptEnvironment:
+    def evaluate(self, state: str) -> EnvironmentFeedback:
+        return EnvironmentFeedback(success=True, score=0.9, details=["stub: accepted"])
 
 
 # ---------------------------------------------------------------------------
-# [CLASSIFICATION / ROUTING] — pure sync logic, no I/O
+# Decomposition-first (planning/decomposition.py -> decompose_goal)
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("description,expected_method", [
-    ("Fetch customer accounts", "direct"),
-    ("Retrieve transaction history for account 501", "direct"),
-    ("Check wire transfer destinations against sanctions list", "direct"),
-    ("Analyze wire transfers for hidden links", "ps"),
-    ("Analyze deposit structuring patterns", "ps"),
-    ("Investigate counterparty relationship for CP-118", "ps"),
-    ("Consolidate evidence from all investigation sources", "tot"),
-    ("Provide final AML risk assessment recommendation", "lats"),
-])
-def test_classify_description_matches_investigation_areas(description, expected_method):
-    assert classify_description(description).method == expected_method
+class ScriptedPlanLLM:
+    def __init__(self, tasks):
+        self._tasks = tasks
 
-
-def test_unrecognized_description_defaults_to_ps_not_a_crash():
-    result = classify_description("Do something entirely unrelated to banking")
-    assert result.method == "ps"
-    assert "defaulted" in result.reason.lower()
-
-
-def test_route_subtask_works_with_either_teammate_1_tasknode_class():
-    # decomposition.py's TaskNode and dynamic_decomposition.py's TaskNode
-    # are two separate classes (both Pydantic, both extra="forbid") — the
-    # router must not care which one it's given, only task_id/description.
-    node_a = DecompFirstTaskNode(task_id="t1", description="Fetch customer accounts")
-    node_b = DynamicTaskNode(task_id="dynamic_1", description="Fetch customer accounts")
-    assert route_subtask(node_a).method == route_subtask(node_b).method == "direct"
-
-
-# ---------------------------------------------------------------------------
-# [ASYNC DISPATCH]
-# ---------------------------------------------------------------------------
-def test_dispatch_requires_an_environment_for_lats_and_says_why():
-    node = DynamicTaskNode(task_id="dynamic_3", description="Provide final risk assessment recommendation")
-    with pytest.raises(ValueError, match="planning/environment.py"):
-        run(dispatch(node, "evidence...", llm=None, environment=None))
-
-
-class RecordingLLM:
-    def __init__(self, content: str):
-        self.content = content
-        self.prompts: list[str] = []
-
-    def invoke(self, messages, **kwargs):
-        self.prompts.append(messages[-1][1])
-        return SimpleNamespace(content=self.content)
-
-
-def test_plan_and_solve_runs_on_real_transaction_evidence():
-    llm = RecordingLLM("PLAN: inspect near-threshold deposits.\nSOLUTION: 4 deposits of 4,600-4,900 in 10 days match structuring.")
-    evidence = "Type: deposit, Amount: 4800, Source: cash, Time: 2026-07-01"
-    result = run(run_plan_and_solve("Analyze deposit structuring patterns for account 501", evidence, llm))
-    assert "structuring" in result.lower()
-    assert "4800" in llm.prompts[0]
-
-
-def test_dispatch_routes_ps_classified_task_through_plan_and_solve():
-    llm = RecordingLLM("PLAN: review wires.\nSOLUTION: single low-value domestic wire, no red flags.")
-    node = DynamicTaskNode(task_id="dynamic_2", description="Analyze wire transfers for hidden links")
-    result = run(dispatch(node, "1 wire, $200, domestic", llm))
-    assert "no red flags" in result.lower()
-
-
-def test_dispatch_sync_bridges_the_coroutine_for_sync_callers():
-    """This is exactly what orchestrator.py's execute_task closures do —
-    calling the async dispatch() from a plain sync function."""
-    llm = RecordingLLM("PLAN: review wires.\nSOLUTION: single low-value domestic wire, no red flags.")
-    node = DecompFirstTaskNode(task_id="t2", description="Analyze wire transfers for hidden links")
-    result = dispatch_sync(node, "1 wire, $200, domestic", llm)
-    assert "no red flags" in result.lower()
-
-
-# ---------------------------------------------------------------------------
-# [ToT]
-# ---------------------------------------------------------------------------
-class ToTLLM:
     class Structured:
         def __init__(self, owner, schema):
             self.owner, self.schema = owner, schema
@@ -118,105 +32,197 @@ class ToTLLM:
     def with_structured_output(self, schema, *, method):
         return self.Structured(self, schema)
 
-    def structured(self, schema, prompt_text: str):
-        if schema is ThoughtCandidates:
-            return schema(candidates=["Benign high-volume merchant activity", "Structuring to evade CTR reporting"])
-        if schema is ThoughtEvaluation:
-            candidate_line = prompt_text.lower().rsplit("candidate path:", 1)[-1]
-            if "structuring" in candidate_line:
-                return schema(score=0.85, rationale="Repeated near-$5,000 deposits match known structuring pattern.")
-            return schema(score=0.35, rationale="No independent evidence supports a benign explanation here.")
-        return schema(score=0.5)
+    def structured(self, schema, prompt_text):
+        name = schema.__name__
+        if name == "GeneratedPlan":
+            return schema(goal="placeholder", tasks=self._tasks)
+        if name == "LATSActionBatch":
+            return schema(actions=[{"action": "commit", "state": "Recommendation: no structuring or sanctions hits found; clear."}])
+        if name == "ThoughtCandidates":
+            return schema(candidates=["Benign activity", "Structuring pattern"])
+        if name == "ThoughtEvaluation":
+            return schema(score=0.8, rationale="stub")
+        return schema(score=0.8)
+
+    def invoke(self, messages, **kwargs):
+        return SimpleNamespace(content="PLAN: reviewed.\nSOLUTION: no notable findings.")
 
 
-def test_dispatch_routes_evidence_consolidation_through_tree_of_thoughts():
-    node = DynamicTaskNode(task_id="dynamic_4", description="Consolidate evidence from all investigation sources")
-    result = run(dispatch(node, "3 deposits of 4,700-4,900 in 6 days", ToTLLM()))
-    assert isinstance(result, list) and result
-    assert "structuring" in result[0].state.lower()
+def _three_task_plan():
+    return [
+        {"id": "t1", "instruction": "Fetch customer accounts", "depends_on": []},
+        {"id": "t2", "instruction": "Check wire transfer destinations against sanctions list", "depends_on": ["t1"]},
+        {"id": "t3", "instruction": "Provide final risk assessment recommendation", "depends_on": ["t2"]},
+    ]
+
+
+def test_decomposition_first_executes_the_full_plan_in_dependency_order():
+    run = run_investigation_decomposition_first(
+        customer_id=1, llm=ScriptedPlanLLM(_three_task_plan()),
+        environment=AlwaysAcceptEnvironment(), save_artifact=False,
+    )
+    assert run.mode == "decomposition-first"
+    assert run.order_executed == ["t1", "t2", "t3"]
+    assert run.detail["tasks"]["t1"]["action_type"] == "direct"
+    assert run.detail["tasks"]["t2"]["action_type"] == "direct"
+    assert run.detail["tasks"]["t3"]["action_type"] == "lats"
+
+
+def test_decomposition_first_uses_real_account_ids_before_sanctions_check():
+    run = run_investigation_decomposition_first(
+        customer_id=1, llm=ScriptedPlanLLM(_three_task_plan()),
+        environment=AlwaysAcceptEnvironment(), save_artifact=False,
+    )
+    assert "account_id" in run.detail["outputs"]["t1"]
+    assert "checked" in run.detail["outputs"]["t2"]  # ran against real wire_transfers
+
+
+def test_decomposition_first_runs_independent_branches_as_parallel_batches():
+    parallel_plan = [
+        {"id": "t1", "instruction": "Fetch customer accounts", "depends_on": []},
+        {"id": "t2a", "instruction": "Analyze wire transfers for hidden links", "depends_on": ["t1"]},
+        {"id": "t2b", "instruction": "Analyze deposit structuring patterns", "depends_on": ["t1"]},
+        {"id": "t3", "instruction": "Consolidate evidence from all investigation sources", "depends_on": ["t2a", "t2b"]},
+    ]
+    run = run_investigation_decomposition_first(
+        customer_id=1, llm=ScriptedPlanLLM(parallel_plan),
+        environment=AlwaysAcceptEnvironment(), save_artifact=False,
+    )
+    batches = run.detail["execution_batches"]
+    assert batches[0] == ["t1"]
+    assert set(batches[1]) == {"t2a", "t2b"}  # same generation -> genuinely parallel
+    assert batches[2] == ["t3"]
 
 
 # ---------------------------------------------------------------------------
-# [LATS + ENVIRONMENT BRIDGE] — the core of this update
+# Dynamic / interleaved (planning/dynamic_decomposition.py)
 # ---------------------------------------------------------------------------
-class SyncFakeEnvironment:
-    """Old-style sync environment — proves the bridge still supports the
-    calling convention used before grounding existed."""
-    def __init__(self, feedback: list[EnvironmentFeedback]):
-        self._feedback = iter(feedback)
+class ScriptedDynamicLLM:
+    def __init__(self, decisions):
+        self.decisions = iter(decisions)
 
-    def evaluate(self, state: str) -> EnvironmentFeedback:
-        return next(self._feedback)
-
-
-class RealisticAsyncEnvironment:
-    """Mirrors teammate 3's actual planning/environment.py signature:
-    async def evaluate(self, candidate, task=None, execute_task=None)."""
-    def __init__(self):
-        self.calls: list[tuple[str, str | None]] = []
-
-    async def evaluate(self, candidate: str, task=None, execute_task=None) -> EnvironmentFeedback:
-        await asyncio.sleep(0)  # forces a real event-loop hop, not just a plain call
-        self.calls.append((candidate, task))
-        success = "sanctions" in candidate.lower()
-        return EnvironmentFeedback(success=success, score=0.95 if success else 0.2, details=["real async evaluate ran"])
-
-
-class LATSLLM:
     class Structured:
         def __init__(self, owner, schema):
             self.owner, self.schema = owner, schema
 
         def invoke(self, messages, **kwargs):
-            return self.owner.structured(self.schema)
+            return self.owner.structured(self.schema, messages[-1][1])
 
     def with_structured_output(self, schema, *, method):
         return self.Structured(self, schema)
 
-    def structured(self, schema):
-        if schema is LATSActionBatch:
-            return schema(actions=[
-                {"action": "weak", "state": "Recommendation: insufficient detail."},
-                {"action": "strong", "state": "Recommendation: customer's wire is a sanctions hit; escalate."},
-            ])
-        return schema(score=0.7)
+    def structured(self, schema, prompt_text):
+        if schema is DynamicDecision:
+            return next(self.decisions)
+        if schema.__name__ == "LATSActionBatch":
+            return schema(actions=[{"action": "commit", "state": "Recommendation: no structuring or sanctions hits found; clear."}])
+        return schema(score=0.8)
 
     def invoke(self, messages, **kwargs):
-        return SimpleNamespace(content="First branch lacked a definite position; commit to one next.")
+        return SimpleNamespace(content="PLAN: reviewed.\nSOLUTION: no notable findings.")
 
 
-def test_environment_bridge_handles_sync_environment_unchanged():
-    bridge = _EnvironmentBridge(SyncFakeEnvironment([EnvironmentFeedback(success=True, score=0.9, details=["ok"])]))
-    feedback = bridge.evaluate("some candidate")
-    assert feedback.success is True
+def _standard_three_step_script():
+    return [
+        DynamicDecision(done=False, next_task="Fetch customer accounts"),
+        DynamicDecision(done=False, next_task="Check wire transfer destinations against sanctions list"),
+        DynamicDecision(done=False, next_task="Provide final risk assessment recommendation"),
+        DynamicDecision(done=True, next_task=""),
+    ]
 
 
-def test_environment_bridge_awaits_a_genuinely_async_environment():
-    async_env = RealisticAsyncEnvironment()
-    bridge = _EnvironmentBridge(async_env, task_description="Provide final risk assessment recommendation")
-    feedback = bridge.evaluate("Recommendation: sanctions hit found; escalate.")
-    assert feedback.success is True
-    assert async_env.calls == [("Recommendation: sanctions hit found; escalate.", "Provide final risk assessment recommendation")]
+def test_dynamic_investigation_runs_end_to_end():
+    run = run_investigation_dynamic(
+        customer_id=1, llm=ScriptedDynamicLLM(_standard_three_step_script()),
+        environment=AlwaysAcceptEnvironment(), save_artifact=False,
+    )
+    assert run.mode == "dynamic"
+    assert run.order_executed == ["dynamic_1", "dynamic_2", "dynamic_3"]
+    methods = [step["action_type"] for step in run.detail["steps"]]
+    assert methods == ["direct", "direct", "lats"]
 
 
-def test_dispatch_routes_risk_assessment_through_lats_with_sync_environment():
-    environment = SyncFakeEnvironment([
-        EnvironmentFeedback(success=False, score=0.3, details=["stub: insufficient detail"]),
-        EnvironmentFeedback(success=True, score=0.95, details=["stub: accepted"]),
-    ])
-    node = DynamicTaskNode(task_id="dynamic_5", description="Provide final risk assessment recommendation")
-    result = run(dispatch(node, "Wire to a sanctioned country; no other flags investigated yet.", LATSLLM(), environment=environment))
-    assert result.success is True
-    assert "sanctions" in result.output.lower()
+def test_dynamic_investigation_asks_for_accounts_first_when_skipped():
+    script = [
+        DynamicDecision(done=False, next_task="Retrieve transaction history for account 501"),
+        DynamicDecision(done=True, next_task=""),
+    ]
+    run = run_investigation_dynamic(
+        customer_id=1, llm=ScriptedDynamicLLM(script),
+        environment=AlwaysAcceptEnvironment(), save_artifact=False,
+    )
+    assert "fetch customer accounts first" in run.detail["steps"][0]["observation"].lower()
 
 
-def test_dispatch_routes_risk_assessment_through_lats_with_real_async_environment():
-    """The actual scenario this update exists for: a genuinely async
-    Environment (teammate 3's real signature) plugged straight into
-    dispatch() without either side needing to know about the other."""
-    environment = RealisticAsyncEnvironment()
-    node = DynamicTaskNode(task_id="dynamic_5", description="Provide final risk assessment recommendation")
-    result = run(dispatch(node, "Wire to a sanctioned country.", LATSLLM(), environment=environment))
-    assert result.success is True
-    assert "sanctions" in result.output.lower()
-    assert environment.calls  # proves the real async evaluate() actually ran
+def test_dynamic_investigation_works_with_a_real_async_environment():
+    class RealisticAsyncEnvironment:
+        def __init__(self):
+            self.calls = []
+
+        async def evaluate(self, candidate, task=None, execute_task=None):
+            import asyncio
+            await asyncio.sleep(0)
+            self.calls.append(candidate)
+            return EnvironmentFeedback(success=True, score=0.9, details=["real async"])
+
+    env = RealisticAsyncEnvironment()
+    run = run_investigation_dynamic(
+        customer_id=1, llm=ScriptedDynamicLLM(_standard_three_step_script()),
+        environment=env, save_artifact=False,
+    )
+    assert run.order_executed == ["dynamic_1", "dynamic_2", "dynamic_3"]
+    assert env.calls  # the real async evaluate() genuinely ran
+
+
+# ---------------------------------------------------------------------------
+# Shared: routing trace + artifact persistence (Issue #68 acceptance criteria)
+# ---------------------------------------------------------------------------
+def test_routing_decisions_are_recorded_in_the_trace_for_both_modes():
+    dynamic_run = run_investigation_dynamic(
+        customer_id=1, llm=ScriptedDynamicLLM(_standard_three_step_script()),
+        environment=AlwaysAcceptEnvironment(), save_artifact=False,
+    )
+    decomp_run = run_investigation_decomposition_first(
+        customer_id=1, llm=ScriptedPlanLLM(_three_task_plan()),
+        environment=AlwaysAcceptEnvironment(), save_artifact=False,
+    )
+    for run in (dynamic_run, decomp_run):
+        recorded_ids = [entry["task_id"] for entry in run.trace.as_payload()]
+        assert recorded_ids == run.order_executed
+        for entry in run.trace.as_payload():
+            assert entry["method"] in {"direct", "ps", "tot", "lats"}
+            assert entry["reason"]
+            assert entry["timestamp"] > 0
+
+
+def test_run_artifact_is_written_with_routing_trace(tmp_path, monkeypatch):
+    import planning.orchestrator as orchestrator_module
+    monkeypatch.setattr(orchestrator_module, "ARTIFACTS_DIR", tmp_path)
+
+    run_investigation_dynamic(
+        customer_id=1, llm=ScriptedDynamicLLM(_standard_three_step_script()),
+        environment=AlwaysAcceptEnvironment(), save_artifact=True,
+    )
+
+    written = list(tmp_path.glob("run-*.json"))
+    assert len(written) == 1
+    payload = json.loads(written[0].read_text())
+    assert payload["mode"] == "dynamic"
+    assert payload["customer_id"] == 1
+    assert len(payload["routing_trace"]) == 3
+
+
+def test_deterministic_tasks_are_backed_by_the_real_registered_mcp_tools():
+    import sys
+    from pathlib import Path
+    mcp_dir = Path(__file__).resolve().parent.parent / "mcp"
+    if str(mcp_dir) not in sys.path:
+        sys.path.insert(0, str(mcp_dir))
+    import server as mcp_server
+    import db_access as db
+
+    tool_names = {tool.name for tool in mcp_server.BASE_TOOLS + mcp_server.COMPLIANCE_TOOLS}
+    assert {"get_customer_accounts", "get_transaction_history", "check_sanctions"} <= tool_names
+
+    from planning.router import direct_find_accounts
+    assert direct_find_accounts(1) == db.get_customer_accounts(1)
