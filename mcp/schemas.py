@@ -79,3 +79,20 @@ CHECK_SANCTIONS_SCHEMA = {
     "required": ["destination_country"],
     "additionalProperties": False,
 }
+
+VALIDATE_INVESTIGATION_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "success": {
+            "type": "boolean",
+        },
+        "details": {
+            "type": "array",
+            "items": {
+                "type": "string",
+            },
+        },
+    },
+    "required": ["success", "details"],
+    "additionalProperties": False,
+}

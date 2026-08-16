@@ -43,6 +43,16 @@ def get_account(account_id: int):
     conn.close()
     return row
 
+# add it ti use call it in validate_investigation()
+def get_wire_transfer(transfer_id: int):
+    """Get one wire transfer by ID for grounded investigation validation."""
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT * FROM wire_transfers WHERE transfer_id = ?",
+        (transfer_id,),
+    ).fetchone()
+    conn.close()
+    return row
 
 def get_customer_accounts(customer_id: int):
     """All accounts linked to a customer — backs the get_customer_accounts

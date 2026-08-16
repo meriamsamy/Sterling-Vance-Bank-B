@@ -162,23 +162,91 @@ def direct_get_destination_countries(account_ids: list[int]) -> list[str]:
 # to know about the other's calling convention.
 # ---------------------------------------------------------------------------
 class _EnvironmentBridge:
-    def __init__(self, environment, task_description: str | None = None):
+    """
+    Adapts the real async Environment to the synchronous interface
+    expected by the toolkit's LATS implementation.
+
+    planning_lab.lats.lats() is synchronous and does:
+
+        feedback = environment.evaluate(state)
+
+    The real banking Environment is asynchronous, so this bridge
+    schedules its coroutine back onto the main MCP event loop.
+
+    IMPORTANT:
+    Do NOT use asyncio.run() here.
+
+    The MCP ClientSession belongs to the main event loop. Running
+    the Environment inside asyncio.run() from the LATS worker thread
+    creates a different event loop and can cause mcp_session.call_tool()
+    to hang indefinitely.
+    """
+
+    def __init__(
+        self,
+        environment,
+        task_description: str | None = None,
+        main_loop=None,
+    ):
         self._environment = environment
         self._task_description = task_description
-        self._is_async = inspect.iscoroutinefunction(environment.evaluate)
+        self._main_loop = main_loop
 
     def evaluate(self, state: str):
-        if not self._is_async:
-            return self._environment.evaluate(state)
-        # We're always called from inside a worker thread here (algorithms.
-        # run_lats wraps the whole toolkit lats() call in asyncio.to_thread),
-        # so this thread has no event loop of its own — asyncio.run() is safe.
-        try:
-            return asyncio.run(self._environment.evaluate(state, task=self._task_description))
-        except TypeError:
-            # Her evaluate() signature might not accept `task=`; fall back
-            # to the minimal single-arg call rather than hard-failing.
-            return asyncio.run(self._environment.evaluate(state))
+        print(
+            "[BRIDGE] BEFORE environment.evaluate()",
+            flush=True,
+        )
+
+        result = self._environment.evaluate(
+            state,
+            task=self._task_description,
+        )
+
+        print(
+            f"[BRIDGE] got result type: {type(result)}",
+            flush=True,
+        )
+
+        if inspect.isawaitable(result):
+
+            if self._main_loop is None:
+                raise RuntimeError(
+                    "Main event loop is required for async Environment."
+                )
+
+            print(
+                "[BRIDGE] Scheduling Environment coroutine "
+                "on main MCP event loop...",
+                flush=True,
+            )
+
+            future = asyncio.run_coroutine_threadsafe(
+                result,
+                self._main_loop,
+            )
+
+            print(
+                "[BRIDGE] Waiting for Environment result...",
+                flush=True,
+            )
+
+            try:
+                result = future.result()
+
+            except Exception:
+                print(
+                    "[BRIDGE] Environment coroutine FAILED",
+                    flush=True,
+                )
+                raise
+
+            print(
+                "[BRIDGE] Environment result received",
+                flush=True,
+            )
+
+        return result
 
 
 def _run_coro_sync(coro):
@@ -249,7 +317,13 @@ async def dispatch(
                 "grounded `environment` (see planning/environment.py, owned by the "
                 "Self-Correction + Grounding concern). Pass it in explicitly."
             )
-        bridge = _EnvironmentBridge(environment, task_description=node.description)
+        main_loop = asyncio.get_running_loop()
+
+        bridge = _EnvironmentBridge(
+            environment,
+            task_description=node.description,
+            main_loop=main_loop,
+        )
         return await run_lats(node.description, evidence_context, llm, bridge)
 
     raise ValueError(f"Unknown route method: {decision.method!r}")
