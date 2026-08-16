@@ -1,0 +1,342 @@
+[
+  {
+    "id": "experiment_01_mechanical_planning",
+    "goal": "Investigate customer 1's financial activity. Retrieve the customer's accounts, transaction history, outbound wire-transfer destinations, and sanctions exposure.",
+    "purpose": "Mechanical investigation with independent factual lookups. The required tasks can be identified completely before execution, so decomposition-first should perform efficiently and dynamic decomposition should have little opportunity to improve the result.",
+    "applicable_methods": [
+      "decomposition-first",
+      "dynamic-decomposition"
+    ],
+    "expected_focus": [
+      "accounts",
+      "transactions",
+      "wire destinations",
+      "sanctions",
+      "fixed planning",
+      "independent tasks"
+    ],
+    "expected_facts": {
+      "customer_id": 1,
+      "account_ids": [
+        1
+      ],
+      "known_transactions": [
+        4,
+        5
+      ],
+      "known_wire_destinations": [
+        "IR"
+      ],
+      "sanctioned_destinations": [
+        "IR"
+      ]
+    },
+    "comparison": {
+      "primary_question": "Does dynamic decomposition provide any benefit over decomposition-first when all required tasks are known in advance?",
+      "metrics": [
+        "success_rate",
+        "correctness",
+        "llm_calls",
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "latency",
+        "estimated_cost"
+      ],
+      "expected_result": "Decomposition-first should be competitive or better because the investigation is mostly mechanical and does not require adaptation."
+    }
+  },
+  {
+    "id": "experiment_02_adaptive_planning",
+    "goal": "Investigate customer 3's financial activity. Begin with account and transaction history. If the transaction history reveals a suspicious cash-deposit pattern, investigate the related wire transfer and determine the additional risk indicators.",
+    "purpose": "Tests whether dynamic decomposition can react to evidence discovered during execution instead of following a completely predefined plan.",
+    "applicable_methods": [
+      "decomposition-first",
+      "dynamic-decomposition"
+    ],
+    "expected_focus": [
+      "adaptive planning",
+      "dependencies",
+      "cash deposits",
+      "structuring",
+      "wire transfer",
+      "observation-driven task generation"
+    ],
+    "expected_facts": {
+      "customer_id": 3,
+      "account_ids": [
+        3
+      ],
+      "cash_deposits": [
+        {
+          "transaction_id": 7,
+          "amount": 4800
+        },
+        {
+          "transaction_id": 8,
+          "amount": 4900
+        },
+        {
+          "transaction_id": 9,
+          "amount": 4700
+        }
+      ],
+      "wire_transfer_id": 3,
+      "wire_destination": "US",
+      "wire_flag": "structuring"
+    },
+    "comparison": {
+      "primary_question": "Does dynamic decomposition adapt more effectively when an early observation reveals a new investigation path?",
+      "metrics": [
+        "success_rate",
+        "correctness",
+        "llm_calls",
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "latency",
+        "estimated_cost",
+        "number_of_generated_tasks",
+        "number_of_adaptive_tasks"
+      ],
+      "expected_result": "Dynamic decomposition should have an advantage because the later wire and structuring investigation depends on evidence discovered from the transaction history."
+    }
+  },
+  {
+    "id": "experiment_03_lookahead_reasoning",
+    "goal": "Analyze customer 5's suspicious financial activity and compare the competing explanations of isolated structuring, sanctions exposure, employee conflict of interest, and the combination of multiple risk indicators.",
+    "purpose": "Tests reasoning problems that require comparing several plausible explanations before selecting the strongest explanation.",
+    "applicable_methods": [
+      "plan-and-solve",
+      "tree-of-thoughts"
+    ],
+    "expected_focus": [
+      "lookahead",
+      "competing hypotheses",
+      "structuring",
+      "sanctions",
+      "self-dealing",
+      "risk-factor combinations",
+      "evidence comparison"
+    ],
+    "expected_facts": {
+      "customer_id": 5,
+      "structuring": true,
+      "sanctions_exposure": true,
+      "self_dealing": true,
+      "wire_transfer_ids": [
+        6,
+        7
+      ],
+      "compliance_reviews": [
+        4,
+        5
+      ]
+    },
+    "comparison": {
+      "primary_question": "Does Tree of Thoughts improve reasoning quality on competing hypotheses compared with a single Plan-and-Solve reasoning path?",
+      "metrics": [
+        "success_rate",
+        "correctness",
+        "llm_calls",
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "latency",
+        "estimated_cost"
+      ],
+      "expected_result": "Tree of Thoughts should have an opportunity to outperform Plan-and-Solve on competing-hypothesis tasks, at the cost of additional model calls and latency."
+    }
+  },
+  {
+    "id": "experiment_04_lats_grounding",
+    "goal": "Produce a final policy-grounded risk assessment for customer 5. Verify the account, transaction, wire-transfer, sanctions, employee relationship, and compliance-review evidence before making the recommendation.",
+    "purpose": "Directly compares LATS using a model-only evaluator with LATS using the real Sterling & Vance MCP/database validator as an external source of truth.",
+    "applicable_methods": [
+      "lats-ungrounded",
+      "lats-grounded"
+    ],
+    "expected_focus": [
+      "LATS",
+      "grounded validation",
+      "external source of truth",
+      "database evidence",
+      "candidate evaluation",
+      "risk assessment"
+    ],
+    "expected_facts": {
+      "customer_id": 5,
+      "risk_level": "high",
+      "structuring": true,
+      "sanctioned_country": "IR",
+      "wire_transfer_6_status": "flagged",
+      "wire_transfer_7_status": "flagged",
+      "related_employee_id": 5,
+      "self_dealing": true,
+      "review_decisions": [
+        "denied",
+        "denied"
+      ]
+    },
+    "comparison": {
+      "primary_question": "Does grounding LATS with the real banking environment improve factual correctness and candidate selection compared with an ungrounded evaluator?",
+      "metrics": [
+        "success_rate",
+        "correctness",
+        "llm_calls",
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "latency",
+        "estimated_cost",
+        "best_score",
+        "environment_score",
+        "model_score",
+        "uct_visit_counts"
+      ],
+      "expected_result": "Grounded LATS should reject candidates containing unsupported factual claims and favor candidates consistent with the real banking database."
+    }
+  },
+  {
+    "id": "experiment_05_reflexion_threshold",
+    "goal": "Investigate customer 5's financial activity using Reflexion while varying the success threshold. Require the agent to recover all major risk indicators before considering the investigation successful.",
+    "purpose": "Tests how the success threshold affects the number of failed trials, reflections, and accumulated episodic lessons.",
+    "applicable_methods": [
+      "reflexion"
+    ],
+    "expected_focus": [
+      "success threshold",
+      "failed trials",
+      "reflection",
+      "episodic memory",
+      "cross-trial learning",
+      "cumulative lessons"
+    ],
+    "expected_facts": {
+      "customer_id": 5,
+      "required_risk_factors": [
+        "structuring",
+        "sanctions exposure",
+        "self-dealing",
+        "employee relationship",
+        "compliance reviews"
+      ]
+    },
+    "comparison": {
+      "thresholds": [
+        0.7,
+        0.9,
+        1.0
+      ],
+      "primary_question": "How does increasing the success threshold change Reflexion's failed trials and accumulated episodic memory?",
+      "metrics": [
+        "success_rate",
+        "number_of_trials",
+        "number_of_failed_trials",
+        "number_of_reflections",
+        "episodic_memory_size",
+        "lessons_carried_forward",
+        "final_correctness",
+        "latency",
+        "estimated_cost"
+      ],
+      "expected_result": "Higher success thresholds should require more successful evidence coverage before termination and may produce additional failed trials and accumulated reflections."
+    }
+  },
+  {
+    "id": "experiment_06_search_behavior",
+    "goal": "Analyze customer 5's risk profile using Tree of Thoughts and grounded LATS, then inspect their artifacts to compare model-only evaluation with environment-grounded search.",
+    "purpose": "Tests whether the artifacts expose the expected difference between ToT model scores and LATS environment scores and search behavior.",
+    "applicable_methods": [
+      "tree-of-thoughts",
+      "lats-grounded"
+    ],
+    "expected_focus": [
+      "model scores",
+      "environment scores",
+      "candidate selection",
+      "UCT",
+      "visit counts",
+      "search artifacts",
+      "grounded feedback"
+    ],
+    "expected_facts": {
+      "customer_id": 5,
+      "structuring": true,
+      "sanctions_exposure": true,
+      "self_dealing": true,
+      "wire_transfer_ids": [
+        6,
+        7
+      ]
+    },
+    "comparison": {
+      "primary_question": "How does Tree of Thoughts' model-based evaluation differ from LATS' environment-grounded evaluation and UCT search behavior?",
+      "artifact_checks": [
+        "ToT candidate scores",
+        "ToT selected thoughts",
+        "LATS environment scores",
+        "LATS model scores",
+        "LATS UCT visit counts",
+        "best candidate",
+        "final environment feedback"
+      ],
+      "metrics": [
+        "number_of_candidates",
+        "candidate_scores",
+        "best_score",
+        "environment_scores",
+        "model_scores",
+        "uct_visit_counts",
+        "iterations"
+      ],
+      "expected_result": "ToT should expose model-based candidate evaluation, while grounded LATS should expose external environment scores and UCT visit information used during search."
+    }
+  },
+  {
+    "id": "experiment_07_validation_failure",
+    "goal": "Investigate customer 5 using a deliberately invalid predefined investigation plan containing a dependency cycle between transaction analysis and wire analysis.",
+    "purpose": "Demonstrates that the planning system validates the investigation graph before executing tasks and rejects an invalid plan.",
+    "applicable_methods": [
+      "decomposition-first"
+    ],
+    "expected_focus": [
+      "DAG validation",
+      "cycle detection",
+      "pre-execution validation",
+      "invalid dependency",
+      "zero task execution"
+    ],
+    "expected_facts": {
+      "customer_id": 5,
+      "invalid_dependencies": [
+        {
+          "task": "transaction_analysis",
+          "depends_on": [
+            "wire_analysis"
+          ]
+        },
+        {
+          "task": "wire_analysis",
+          "depends_on": [
+            "transaction_analysis"
+          ]
+        }
+      ],
+      "expected_behavior": "Validation must fail before any investigation task is executed.",
+      "expected_completed_tasks": 0
+    },
+    "comparison": {
+      "primary_question": "Does the planner detect an invalid cyclic plan before execution rather than discovering the problem after tasks have started?",
+      "metrics": [
+        "validation_result",
+        "validation_error",
+        "tasks_started",
+        "tasks_completed",
+        "llm_calls",
+        "latency"
+      ],
+      "expected_result": "The cyclic plan should be rejected during validation and no investigation task should execute."
+    }
+  }
+]
