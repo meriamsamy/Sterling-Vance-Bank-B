@@ -273,3 +273,7 @@ Policy-grounded Recommendation
 The key idea is:
 
 > **The agent is planning and adapting an investigation, not simply answering a question or executing one tool call.**
+
+# DEMO
+
+[▶️ Watch Demo](../DEMO.mp4)
