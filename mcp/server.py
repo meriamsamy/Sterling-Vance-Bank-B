@@ -37,7 +37,9 @@ from schemas import (
     GET_TRANSACTION_HISTORY_SCHEMA,
     CHECK_SANCTIONS_SCHEMA,
     VALIDATE_INVESTIGATION_OUTPUT_SCHEMA,
+    TOOL_VALIDATORS,
 )
+from pydantic import ValidationError
 from policy_document import WIRE_TRANSFER_POLICY
 
 server = Server("sterling-vance-wire-server")
@@ -131,6 +133,22 @@ async def list_tools():
 
 @server.call_tool()
 async def call_tool(name: str, args: dict):
+
+    # Server-side validation before any handler or database operation.
+    validator = TOOL_VALIDATORS.get(name)
+
+    if validator is not None:
+        try:
+            validated_args = validator.model_validate(args)
+            args = validated_args.model_dump()
+        except ValidationError:
+            return [
+                types.TextContent(
+                    type="text",
+                    text="Invalid tool arguments.",
+                )
+            ]
+
     ctx = server.request_context
 
     if name == "login":
