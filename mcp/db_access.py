@@ -121,6 +121,40 @@ def is_sanctioned(country_code: str) -> bool:
     conn.close()
     return row is not None
 
+def get_sanctions_status(country_code: str) -> str:
+    """
+    Return the current sanctions status of a country.
+    """
+
+    return (
+        "SANCTIONED"
+        if is_sanctioned(country_code)
+        else "CLEAR"
+    )
+
+
+def get_sanctions_version() -> int:
+    """
+    Return the current global sanctions-list version.
+    """
+
+    conn = get_conn()
+
+    row = conn.execute(
+        """
+        SELECT version
+        FROM sanctions_metadata
+        WHERE id = 1
+        """
+    ).fetchone()
+
+    conn.close()
+
+    if row is None:
+        return 1
+
+    return int(row["version"])
+
 
 def looks_like_structuring(account_id: int) -> bool:
     conn = get_conn()
@@ -239,3 +273,343 @@ def get_transaction_count() -> int:
     count = conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
     conn.close()
     return count
+
+def update_sanctions_status(
+    country_code: str,
+    sanctioned: bool,
+    timestamp: str,
+):
+    """
+    Update the current sanctions status and record the
+    change as a versioned external event.
+
+    This simulates an external sanctions-list update
+    arriving while an investigation is open.
+    """
+
+    conn = get_conn()
+
+    existing = conn.execute(
+        """
+        SELECT 1
+        FROM sanctions_list
+        WHERE country_code = ?
+        """,
+        (country_code,),
+    ).fetchone()
+
+    previous_status = (
+        "SANCTIONED"
+        if existing is not None
+        else "CLEAR"
+    )
+
+    new_status = (
+        "SANCTIONED"
+        if sanctioned
+        else "CLEAR"
+    )
+
+    # No actual change
+    if previous_status == new_status:
+
+        version_row = conn.execute(
+            """
+            SELECT version
+            FROM sanctions_metadata
+            WHERE id = 1
+            """
+        ).fetchone()
+
+        version = (
+            int(version_row["version"])
+            if version_row
+            else 1
+        )
+
+        conn.close()
+
+        return {
+            "changed": False,
+            "version": version,
+            "previous_status": previous_status,
+            "new_status": new_status,
+        }
+
+    # --------------------------------------------------------
+    # Update current sanctions list
+    # --------------------------------------------------------
+
+    if sanctioned:
+
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO sanctions_list(
+                country_code,
+                reason,
+                last_updated
+            )
+            VALUES (?, ?, ?)
+            """,
+            (
+                country_code,
+                "External sanctions update",
+                timestamp,
+            ),
+        )
+
+    else:
+
+        conn.execute(
+            """
+            DELETE FROM sanctions_list
+            WHERE country_code = ?
+            """,
+            (country_code,),
+        )
+
+    # --------------------------------------------------------
+    # Increment sanctions version
+    # --------------------------------------------------------
+
+    conn.execute(
+        """
+        UPDATE sanctions_metadata
+        SET version = version + 1
+        WHERE id = 1
+        """
+    )
+
+    version_row = conn.execute(
+        """
+        SELECT version
+        FROM sanctions_metadata
+        WHERE id = 1
+        """
+    ).fetchone()
+
+    version = int(version_row["version"])
+
+    # --------------------------------------------------------
+    # Persist external event
+    # --------------------------------------------------------
+
+    cur = conn.execute(
+        """
+        INSERT INTO sanctions_history(
+            country_code,
+            previous_status,
+            new_status,
+            version,
+            changed_at
+        )
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            country_code,
+            previous_status,
+            new_status,
+            version,
+            timestamp,
+        ),
+    )
+
+    event_id = cur.lastrowid
+
+    conn.commit()
+    conn.close()
+
+    return {
+        "changed": True,
+        "event_id": event_id,
+        "version": version,
+        "previous_status": previous_status,
+        "new_status": new_status,
+    }
+
+def get_sanctions_changes_since(
+    country_code: str,
+    version: int,
+):
+    """
+    Return sanctions changes for a country that occurred
+    after the supplied version.
+    """
+
+    conn = get_conn()
+
+    rows = conn.execute(
+        """
+        SELECT
+            event_id,
+            country_code,
+            previous_status,
+            new_status,
+            version,
+            changed_at
+        FROM sanctions_history
+        WHERE country_code = ?
+          AND version > ?
+        ORDER BY version ASC
+        """,
+        (
+            country_code,
+            version,
+        ),
+    ).fetchall()
+
+    conn.close()
+
+    return [dict(row) for row in rows]
+
+def create_workflow_ticket(
+    workflow_type: str,
+    wire_id: int | None,
+    review_id: int | None,
+    status: str,
+    error_type: str | None,
+    error_message: str | None,
+    failed_node: str | None,
+    created_at: str,
+) -> int:
+
+    conn = get_conn()
+
+    cur = conn.execute(
+        """
+        INSERT INTO workflow_tickets (
+            workflow_type,
+            wire_id,
+            review_id,
+            status,
+            error_type,
+            error_message,
+            failed_node,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            workflow_type,
+            wire_id,
+            review_id,
+            status,
+            error_type,
+            error_message,
+            failed_node,
+            created_at,
+        ),
+    )
+
+    conn.commit()
+
+    ticket_id = cur.lastrowid
+
+    conn.close()
+
+    return ticket_id
+
+
+def create_human_review_task(
+    workflow_type: str,
+    wire_id: int | None,
+    review_id: int | None,
+    status: str,
+    reason: str,
+    recommended_action: str | None,
+    created_at: str,
+) -> int:
+
+    conn = get_conn()
+
+    cur = conn.execute(
+        """
+        INSERT INTO human_review_tasks (
+            workflow_type,
+            wire_id,
+            review_id,
+            status,
+            reason,
+            recommended_action,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            workflow_type,
+            wire_id,
+            review_id,
+            status,
+            reason,
+            recommended_action,
+            created_at,
+        ),
+    )
+
+    conn.commit()
+
+    task_id = cur.lastrowid
+
+    conn.close()
+
+    return task_id
+
+
+def complete_human_review_task(
+    task_id: int,
+    decision: str,
+    notes: str,
+    assigned_to: int,
+    completed_at: str,
+):
+
+    conn = get_conn()
+
+    conn.execute(
+        """
+        UPDATE human_review_tasks
+        SET
+            status = 'completed',
+            decision = ?,
+            notes = ?,
+            assigned_to = ?,
+            completed_at = ?
+        WHERE task_id = ?
+        """,
+        (
+            decision,
+            notes,
+            assigned_to,
+            completed_at,
+            task_id,
+        ),
+    )
+
+    conn.commit()
+    conn.close()
+
+def resolve_workflow_ticket(
+    ticket_id: int,
+    resolved_at: str,
+):
+    """Mark a previously opened workflow failure as resolved."""
+
+    conn = get_conn()
+
+    conn.execute(
+        """
+        UPDATE workflow_tickets
+        SET
+            status = 'resolved',
+            resolved_at = ?
+        WHERE ticket_id = ?
+        """,
+        (
+            resolved_at,
+            ticket_id,
+        ),
+    )
+
+    conn.commit()
+    conn.close()
+
