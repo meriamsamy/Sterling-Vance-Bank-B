@@ -1,28 +1,28 @@
+from contextlib import asynccontextmanager
 from pathlib import Path
-import sqlite3
 
-from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 
 CHECKPOINT_DB = (
-    Path(__file__).resolve().parent
-    / "checkpoints.db"
-)
-
-CHECKPOINT_DB.parent.mkdir(
-    parents=True,
-    exist_ok=True,
+    Path(__file__).resolve().parent / "checkpoints.db"
 )
 
 
-def create_checkpointer() -> SqliteSaver:
+# ============================================================
+# [CHECKPOINT CONTEXT]
+# Create and safely manage the async SQLite checkpointer.
+#
+# AsyncSqliteSaver.from_conn_string() returns an async
+# context manager, so it MUST be used with "async with".
+# ============================================================
 
-    conn = sqlite3.connect(
-        str(CHECKPOINT_DB),
-        check_same_thread=False,
-    )
+@asynccontextmanager
+async def checkpoint_context():
+    async with AsyncSqliteSaver.from_conn_string(
+        str(CHECKPOINT_DB)
+    ) as checkpointer:
 
-    return SqliteSaver(conn)
-
-
-checkpointer = create_checkpointer()
+        # AsyncSqliteSaver is already initialized when entered
+        # through the async context manager.
+        yield checkpointer

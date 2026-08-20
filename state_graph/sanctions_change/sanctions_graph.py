@@ -1,13 +1,26 @@
 from __future__ import annotations
 
 from typing import Any
+from pathlib import Path
+import sys
+
+ROOT_DIR = Path(__file__).resolve().parents[2]
+
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+MCP_DIR = ROOT_DIR / "mcp"
+
+if str(MCP_DIR) not in sys.path:
+    sys.path.insert(0, str(MCP_DIR))
 
 import db_access as db
+
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
-from .sanctions_state import SanctionsReviewState
-from .sanctions_nodes import (
+from state_graph.sanctions_change.sanctions_state import SanctionsReviewState
+from state_graph.sanctions_change.sanctions_nodes import (
     load_review,
     collect_evidence,
     detect_sanctions_change,
@@ -16,9 +29,9 @@ from .sanctions_nodes import (
     fail_review,
     utc_now,
 )
-from .sanctions_constrained import constrained_react_node
-from rag.hybrid_rag import hybrid_rag
+from state_graph.sanctions_change.sanctions_constrained import constrained_react_node
 
+from rag.hybrid_rag import hybrid_rag
 
 # ============================================================
 # [CONDITIONAL ROUTING]

@@ -2,10 +2,22 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any
+from pathlib import Path
+import sys
+
+ROOT_DIR = Path(__file__).resolve().parents[2]
+
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+MCP_DIR = ROOT_DIR / "mcp"
+
+if str(MCP_DIR) not in sys.path:
+    sys.path.insert(0, str(MCP_DIR))
 
 import db_access as db
 
-from .sanctions_state import SanctionsReviewState
+from state_graph.sanctions_change.sanctions_state import SanctionsReviewState
 
 
 def utc_now() -> str:

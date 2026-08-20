@@ -163,7 +163,7 @@ class SanctionsReviewState(TypedDict, total=False):
     failure: dict[str, Any] | None
     failure_ticket_id: int | None
 
-    checkpoint_id: str | None
+    failure_checkpoint_id: str | None
 
     error_type: str | None
     error_message: str | None
