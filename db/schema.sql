@@ -131,3 +131,60 @@ CREATE TABLE IF NOT EXISTS semantic_memory (
 
 CREATE INDEX IF NOT EXISTS idx_semantic_lookup
     ON semantic_memory (entity_type, entity_id, fact_key, status);
+
+-- ============================================================
+-- State Graph additions:
+-- Sanctions change history + durable external events
+CREATE TABLE IF NOT EXISTS sanctions_history (
+    event_id INTEGER PRIMARY KEY,
+    country_code TEXT NOT NULL,
+    previous_status TEXT NOT NULL,
+    new_status TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    changed_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sanctions_metadata (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    version INTEGER NOT NULL
+);
+
+INSERT OR IGNORE INTO sanctions_metadata (id, version)
+VALUES (1, 1);
+
+CREATE INDEX IF NOT EXISTS idx_sanctions_history_country
+    ON sanctions_history (country_code);
+
+CREATE INDEX IF NOT EXISTS idx_sanctions_history_version
+    ON sanctions_history (version);
+
+--for state graph
+CREATE TABLE IF NOT EXISTS workflow_tickets (
+    ticket_id INTEGER PRIMARY KEY,
+    workflow_type TEXT NOT NULL,
+    wire_id INTEGER,
+    review_id INTEGER,
+    status TEXT NOT NULL,
+    error_type TEXT,
+    error_message TEXT,
+    failed_node TEXT,
+    created_at TEXT NOT NULL,
+    resolved_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS human_review_tasks (
+    task_id INTEGER PRIMARY KEY,
+    workflow_type TEXT NOT NULL,
+    wire_id INTEGER,
+    review_id INTEGER,
+    status TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    recommended_action TEXT,
+    assigned_to INTEGER,
+    decision TEXT,
+    notes TEXT,
+    created_at TEXT NOT NULL,
+    completed_at TEXT,
+    FOREIGN KEY (assigned_to)
+        REFERENCES employees(employee_id)
+);

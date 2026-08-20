@@ -15,6 +15,7 @@ langchain-mistralai==1.1.6
 langchain-mcp-adapters==0.3.1
 langchain-google-genai==4.3.1
 langchain-protocol==0.0.18
+langgraph-checkpoint-sqlite==3.1.0
 
 groq==0.31.0
 pydantic==2.11.7
