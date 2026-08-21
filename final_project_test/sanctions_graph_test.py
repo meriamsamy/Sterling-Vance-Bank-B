@@ -40,28 +40,41 @@ import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-
-
-    
 # ============================================================
 # PROJECT ROOT
 # ============================================================
 
 ROOT = Path(__file__).resolve().parents[1]
 
+# ============================================================
+# LOAD THE EXTERNAL MCP SDK FIRST
+# ============================================================
+
+# The repository has a local folder named "mcp".
+# We must make sure the external MCP SDK from site-packages
+# is imported before adding the project root to sys.path.
+
+# Remove current directory and project root temporarily
+# so they cannot shadow the external MCP package.
+sys.path = [
+    p for p in sys.path
+    if p not in ("", str(ROOT))
+]
+
+# Import the REAL external MCP SDK
+import mcp
+
+print(f"[TEST] MCP SDK: {mcp.__file__}")
+
+# ============================================================
+# NOW ADD PROJECT ROOT
+# ============================================================
+
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-
 # ============================================================
 # PROJECT DB ACCESS
-#
-# db_access.py is inside:
-#
-#     mcp/db_access.py
-#
-# We intentionally import the project's file directly rather
-# than importing the external Python package named "mcp".
 # ============================================================
 
 MCP_DIR = ROOT / "mcp"
@@ -71,19 +84,18 @@ if not MCP_DIR.exists():
         f"Project mcp directory not found: {MCP_DIR}"
     )
 
+# Add the local mcp folder at the END.
+# This is only so we can import db_access.py.
 if str(MCP_DIR) not in sys.path:
-    sys.path.insert(0, str(MCP_DIR))
+    sys.path.append(str(MCP_DIR))
 
 import db_access as db
-
 
 # ============================================================
 # REAL BANK DATABASE
 # ============================================================
 
 BANK_DB = Path(db.DB_PATH)
-
-
 # ============================================================
 # GRAPH IMPORTS
 # ============================================================
