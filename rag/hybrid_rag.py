@@ -49,15 +49,27 @@ chunks = [
 
 # ---------------- BM25 ----------------
 
-bm25_retriever = BM25Retriever.from_documents(chunks)
-bm25_retriever.k = TOP_K
-
+if chunks:
+    bm25_retriever = BM25Retriever.from_documents(chunks)
+    bm25_retriever.k = TOP_K
+else:
+    bm25_retriever = None
 
 # ======================================================
 # Hybrid RAG
 # ======================================================
 
 def hybrid_rag(question):
+    if not chunks or bm25_retriever is None:
+        return {
+            "answer": "I couldn't find that information in the bank policy.",
+            "status": "NO_DOCUMENTS",
+            "documents_used": 0,
+            "iterations": 1,
+            "tokens": 0,
+            "context": "",
+            "documents": [],
+        }
 
     # ---------------- Metadata Filter ----------------
     print("\n[HYBRID RAG TOOL] CALLED")
