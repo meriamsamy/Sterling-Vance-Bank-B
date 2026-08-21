@@ -2,6 +2,16 @@ import json
 from typing import Any, Literal, Annotated
 
 from langchain_mistralai import ChatMistralAI
+import sys
+from pathlib import Path
+
+SITE_PACKAGES = Path(sys.prefix) / "Lib" / "site-packages"
+
+if str(SITE_PACKAGES) in sys.path:
+    sys.path.remove(str(SITE_PACKAGES))
+
+sys.path.insert(0, str(SITE_PACKAGES))
+
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
 from pydantic import (
@@ -225,6 +235,18 @@ INVESTIGATION RULES
 9. Never make a conclusion based on information that was
    not present in the investigation state or MCP results.
 
+8. NEVER call wire_transfer_initiate during investigation.
+
+wire_transfer_initiate is a write/execution tool.
+It is NOT a read-only investigation tool.
+
+Do not use it to retrieve wire information.
+Do not use it with wire_id.
+Do not invent arguments such as simulate=true.
+
+Wire information must come from the current graph state
+or from read-only MCP tools.
+
 ------------------------------------------------------------
 CONSTRAINT
 ------------------------------------------------------------
@@ -331,42 +353,103 @@ def safe_escalation(
 
 
 def validate_tool_arguments(tool, tool_input):
-
     if not isinstance(tool_input, dict):
-        return (False,"Tool input must be a JSON object.",)
+        return (
+            False,
+            "Tool input must be a JSON object.",
+        )
 
-    args_schema = getattr(
-        tool,
-        "args_schema",
-        None,
-    )
+    args_schema = getattr(tool, "args_schema", None)
 
     if args_schema is None:
-        return (False,"The MCP tool does not expose an argument schema.",)
+        return (
+            False,
+            f"MCP tool '{tool.name}' does not expose an argument schema.",
+        )
+
     try:
-        # Pydantic model
+        # -----------------------------------------------------
+        # Case 1: Pydantic model
+        # -----------------------------------------------------
         if hasattr(args_schema, "model_validate"):
             args_schema.model_validate(tool_input)
-        # Pydantic TypeAdapter
-        elif hasattr(args_schema, "validate_python"):
+            return True, ""
+
+        # -----------------------------------------------------
+        # Case 2: Pydantic TypeAdapter
+        # -----------------------------------------------------
+        if hasattr(args_schema, "validate_python"):
             args_schema.validate_python(tool_input)
-        else:
-            return (False,"Unable to validate the MCP tool argument schema.",)
+            return True, ""
+
+        # -----------------------------------------------------
+        # Case 3: JSON Schema dictionary
+        # -----------------------------------------------------
+        if isinstance(args_schema, dict):
+            from jsonschema import Draft202012Validator
+
+            validator = Draft202012Validator(args_schema)
+
+            errors = sorted(
+                validator.iter_errors(tool_input),
+                key=lambda error: list(error.path),
+            )
+
+            if errors:
+                messages = []
+
+                for error in errors:
+                    path = ".".join(
+                        str(part)
+                        for part in error.path
+                    )
+
+                    if path:
+                        messages.append(
+                            f"{path}: {error.message}"
+                        )
+                    else:
+                        messages.append(
+                            error.message
+                        )
+
+                return (
+                    False,
+                    (
+                        f"Invalid arguments for MCP tool "
+                        f"'{tool.name}': "
+                        + "; ".join(messages)
+                    ),
+                )
+
+            return True, ""
+
+        return (
+            False,
+            (
+                f"Unsupported argument schema type for "
+                f"MCP tool '{tool.name}': "
+                f"{type(args_schema).__name__}"
+            ),
+        )
+
     except ValidationError as e:
         return (
             False,
-            f"Invalid arguments for MCP tool "
-            f"'{tool.name}': {e}",
+            (
+                f"Invalid arguments for MCP tool "
+                f"'{tool.name}': {e}"
+            ),
         )
+
     except Exception as e:
         return (
             False,
-            f"Tool argument validation failed: "
-            f"{type(e).__name__}: {e}",
+            (
+                f"Tool argument validation failed: "
+                f"{type(e).__name__}: {e}"
+            ),
         )
-
-    return True, ""
-
 
 # ============================================================
 # Constrained ReAct NODE
