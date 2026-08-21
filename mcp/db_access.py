@@ -8,6 +8,11 @@ from pathlib import Path
 
 DB_PATH = Path(__file__).parent.parent / "db" / "bank.db"
 
+
+# ============================================================
+# MARYAM'S CODE
+# ============================================================
+
 # Roles that don't exist in schema.sql get a hardcoded authority limit,
 # since employees table has no limit column.
 WIRE_AUTHORITY_LIMIT = {
@@ -16,8 +21,8 @@ WIRE_AUTHORITY_LIMIT = {
     "fraud_investigator": 250000,
 }
 
-STRUCTURING_THRESHOLD = 5000     # deposits just under this, repeated, look like structuring
-STRUCTURING_COUNT = 3            # this many near-threshold deposits = flag
+STRUCTURING_THRESHOLD = 5000
+STRUCTURING_COUNT = 3
 
 
 def get_conn():
@@ -29,7 +34,8 @@ def get_conn():
 def get_employee(employee_id: int):
     conn = get_conn()
     row = conn.execute(
-        "SELECT * FROM employees WHERE employee_id = ?", (employee_id,)
+        "SELECT * FROM employees WHERE employee_id = ?",
+        (employee_id,)
     ).fetchone()
     conn.close()
     return row
@@ -38,12 +44,13 @@ def get_employee(employee_id: int):
 def get_account(account_id: int):
     conn = get_conn()
     row = conn.execute(
-        "SELECT * FROM accounts WHERE account_id = ?", (account_id,)
+        "SELECT * FROM accounts WHERE account_id = ?",
+        (account_id,)
     ).fetchone()
     conn.close()
     return row
 
-# add it ti use call it in validate_investigation()
+
 def get_wire_transfer(transfer_id: int):
     """Get one wire transfer by ID for grounded investigation validation."""
     conn = get_conn()
@@ -54,32 +61,49 @@ def get_wire_transfer(transfer_id: int):
     conn.close()
     return row
 
+
 def get_customer_accounts(customer_id: int):
-    """All accounts linked to a customer — backs the get_customer_accounts
-    investigation tool. Read-only, same table get_account already reads."""
+    """All accounts linked to a customer."""
     conn = get_conn()
     rows = conn.execute(
-        "SELECT account_id, account_type, balance FROM accounts WHERE customer_id = ?",
+        """
+        SELECT account_id, account_type, balance
+        FROM accounts
+        WHERE customer_id = ?
+        """,
         (customer_id,),
     ).fetchall()
     conn.close()
+
     return [dict(row) for row in rows]
 
 
 def get_wire_destination_countries(account_ids: list[int]):
-    """Distinct real outbound wire destinations for these accounts —
-    backs check_sanctions when a specific country isn't already known."""
+    """Distinct real outbound wire destinations for these accounts."""
     if not account_ids:
         return []
+
     conn = get_conn()
+
     placeholders = ",".join("?" for _ in account_ids)
+
     rows = conn.execute(
-        f"SELECT DISTINCT destination_country FROM wire_transfers "
-        f"WHERE source_account_id IN ({placeholders})",
+        f"""
+        SELECT DISTINCT destination_country
+        FROM wire_transfers
+        WHERE source_account_id IN ({placeholders})
+        """,
         account_ids,
     ).fetchall()
+
     conn.close()
-    return [row["destination_country"] for row in rows if row["destination_country"]]
+
+    return [
+        row["destination_country"]
+        for row in rows
+        if row["destination_country"]
+    ]
+
 
 def get_transaction_history(account_id):
 
@@ -108,18 +132,25 @@ def get_transaction_history(account_id):
 
     for row in rows:
         history.append(
-            f"Type: {row['type']}, Amount: {row['amount']}, Source: {row['source']}, Time: {row['timestamp']}"
+            f"Type: {row['type']}, Amount: {row['amount']}, "
+            f"Source: {row['source']}, Time: {row['timestamp']}"
         )
 
     return "\n".join(history)
 
+
 def is_sanctioned(country_code: str) -> bool:
     conn = get_conn()
+
     row = conn.execute(
-        "SELECT 1 FROM sanctions_list WHERE country_code = ?", (country_code,)
+        "SELECT 1 FROM sanctions_list WHERE country_code = ?",
+        (country_code,)
     ).fetchone()
+
     conn.close()
+
     return row is not None
+
 
 def get_sanctions_status(country_code: str) -> str:
     """
@@ -157,122 +188,240 @@ def get_sanctions_version() -> int:
 
 
 def looks_like_structuring(account_id: int) -> bool:
+
     conn = get_conn()
+
     count = conn.execute(
-        """SELECT COUNT(*) FROM transactions
-           WHERE account_id = ? AND type = 'deposit' AND amount BETWEEN ? AND ?""",
-        (account_id, STRUCTURING_THRESHOLD - 500, STRUCTURING_THRESHOLD - 1),
+        """
+        SELECT COUNT(*)
+        FROM transactions
+        WHERE account_id = ?
+          AND type = 'deposit'
+          AND amount BETWEEN ? AND ?
+        """,
+        (
+            account_id,
+            STRUCTURING_THRESHOLD - 500,
+            STRUCTURING_THRESHOLD - 1,
+        ),
     ).fetchone()[0]
+
     conn.close()
+
     return count >= STRUCTURING_COUNT
 
 
 def is_self_dealing(employee_row) -> bool:
-    # an employee tied to a customer (family/self) has a conflict of interest
-    # on any wire they initiate, not just ones touching that customer's account
+    """
+    An employee tied to a customer has a conflict of interest
+    on any wire they initiate.
+    """
+
     if employee_row is None:
         return False
+
     return employee_row["related_customer_id"] is not None
 
 
 def insert_wire_transfer(**fields) -> int:
+
     conn = get_conn()
+
     cur = conn.execute(
-        """INSERT INTO wire_transfers
-           (source_account_id, destination_account_num, destination_country,
-            amount, status, flag_reason, initiated_by, approved_by, timestamp)
-           VALUES (:source_account_id, :destination_account_num, :destination_country,
-                   :amount, :status, :flag_reason, :initiated_by, :approved_by, :timestamp)""",
+        """
+        INSERT INTO wire_transfers
+        (
+            source_account_id,
+            destination_account_num,
+            destination_country,
+            amount,
+            status,
+            flag_reason,
+            initiated_by,
+            approved_by,
+            timestamp
+        )
+        VALUES
+        (
+            :source_account_id,
+            :destination_account_num,
+            :destination_country,
+            :amount,
+            :status,
+            :flag_reason,
+            :initiated_by,
+            :approved_by,
+            :timestamp
+        )
+        """,
         fields,
     )
+
     conn.commit()
+
     transfer_id = cur.lastrowid
+
     conn.close()
+
     return transfer_id
 
 
 def update_account_balance(account_id: int, new_balance: float):
+
     conn = get_conn()
+
     conn.execute(
-        "UPDATE accounts SET balance = ? WHERE account_id = ?", (new_balance, account_id)
+        """
+        UPDATE accounts
+        SET balance = ?
+        WHERE account_id = ?
+        """,
+        (new_balance, account_id),
     )
+
     conn.commit()
     conn.close()
 
 
 def debit_account(account_id: int, amount: float) -> float:
-    """Atomically debit an account and return the new balance.
-    Called from wire_transfer() once a transfer is actually approved -
-    previously this never happened, so approved wires didn't move money.
     """
+    Atomically debit an account and return the new balance.
+    """
+
     conn = get_conn()
+
     row = conn.execute(
-        "SELECT balance FROM accounts WHERE account_id = ?", (account_id,)
+        """
+        SELECT balance
+        FROM accounts
+        WHERE account_id = ?
+        """,
+        (account_id,)
     ).fetchone()
+
     new_balance = row["balance"] - amount
+
     conn.execute(
-        "UPDATE accounts SET balance = ? WHERE account_id = ?", (new_balance, account_id)
+        """
+        UPDATE accounts
+        SET balance = ?
+        WHERE account_id = ?
+        """,
+        (new_balance, account_id),
     )
+
     conn.commit()
     conn.close()
+
     return new_balance
 
 
 def credit_account(account_id: int, amount: float) -> float:
-    """Add money to an account. The counterpart to debit_account() -
-    useful for topping test accounts back up between demo runs, since
-    every approved wire permanently reduces the source balance.
     """
+    Add money to an account.
+    """
+
     conn = get_conn()
+
     row = conn.execute(
-        "SELECT balance FROM accounts WHERE account_id = ?", (account_id,)
+        """
+        SELECT balance
+        FROM accounts
+        WHERE account_id = ?
+        """,
+        (account_id,)
     ).fetchone()
+
     new_balance = row["balance"] + amount
+
     conn.execute(
-        "UPDATE accounts SET balance = ? WHERE account_id = ?", (new_balance, account_id)
+        """
+        UPDATE accounts
+        SET balance = ?
+        WHERE account_id = ?
+        """,
+        (new_balance, account_id),
     )
+
     conn.commit()
     conn.close()
+
     return new_balance
 
 
 def set_wire_approver(
-    transfer_id: int, approved_by: int, status: str):
-    """Record who actually approved/rejected a held transfer.
-    Previously approved_by was always written as NULL, even after a human
-    signed off via elicitation - no audit trail of who approved what.
-    """
+    transfer_id: int,
+    approved_by: int,
+    status: str
+):
+
     conn = get_conn()
+
     conn.execute(
-        "UPDATE wire_transfers SET approved_by = ?, status = ? WHERE transfer_id = ?",
+        """
+        UPDATE wire_transfers
+        SET approved_by = ?, status = ?
+        WHERE transfer_id = ?
+        """,
         (approved_by, status, transfer_id),
     )
+
     conn.commit()
     conn.close()
 
 
-def insert_compliance_review(transfer_id: int, reviewer_id: int, decision: str, notes: str, timestamp: str) -> int:
-    """Log the human decision on a flagged wire into compliance_reviews.
-    This table existed in schema.sql/the ERD but nothing ever wrote to it -
-    every elicitation outcome now leaves an audit record here.
-    """
+def insert_compliance_review(
+    transfer_id: int,
+    reviewer_id: int,
+    decision: str,
+    notes: str,
+    timestamp: str
+) -> int:
+
     conn = get_conn()
+
     cur = conn.execute(
-        """INSERT INTO compliance_reviews (transfer_id, reviewer_id, decision, notes, timestamp)
-           VALUES (?, ?, ?, ?, ?)""",
-        (transfer_id, reviewer_id, decision, notes, timestamp),
+        """
+        INSERT INTO compliance_reviews
+        (
+            transfer_id,
+            reviewer_id,
+            decision,
+            notes,
+            timestamp
+        )
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            transfer_id,
+            reviewer_id,
+            decision,
+            notes,
+            timestamp,
+        ),
     )
+
     conn.commit()
+
     review_id = cur.lastrowid
+
     conn.close()
+
     return review_id
 
 
 def get_transaction_count() -> int:
+
     conn = get_conn()
-    count = conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
+
+    count = conn.execute(
+        "SELECT COUNT(*) FROM transactions"
+    ).fetchone()[0]
+
     conn.close()
+
     return count
+
 
 def update_sanctions_status(
     country_code: str,
@@ -282,9 +431,6 @@ def update_sanctions_status(
     """
     Update the current sanctions status and record the
     change as a versioned external event.
-
-    This simulates an external sanctions-list update
-    arriving while an investigation is open.
     """
 
     conn = get_conn()
@@ -336,15 +482,14 @@ def update_sanctions_status(
             "new_status": new_status,
         }
 
-    # --------------------------------------------------------
     # Update current sanctions list
-    # --------------------------------------------------------
 
     if sanctioned:
 
         conn.execute(
             """
-            INSERT OR REPLACE INTO sanctions_list(
+            INSERT OR REPLACE INTO sanctions_list
+            (
                 country_code,
                 reason,
                 last_updated
@@ -368,9 +513,7 @@ def update_sanctions_status(
             (country_code,),
         )
 
-    # --------------------------------------------------------
     # Increment sanctions version
-    # --------------------------------------------------------
 
     conn.execute(
         """
@@ -390,13 +533,12 @@ def update_sanctions_status(
 
     version = int(version_row["version"])
 
-    # --------------------------------------------------------
     # Persist external event
-    # --------------------------------------------------------
 
     cur = conn.execute(
         """
-        INSERT INTO sanctions_history(
+        INSERT INTO sanctions_history
+        (
             country_code,
             previous_status,
             new_status,
@@ -426,6 +568,7 @@ def update_sanctions_status(
         "previous_status": previous_status,
         "new_status": new_status,
     }
+
 
 def get_sanctions_changes_since(
     country_code: str,
@@ -462,6 +605,7 @@ def get_sanctions_changes_since(
 
     return [dict(row) for row in rows]
 
+
 def create_workflow_ticket(
     workflow_type: str,
     wire_id: int | None,
@@ -477,7 +621,8 @@ def create_workflow_ticket(
 
     cur = conn.execute(
         """
-        INSERT INTO workflow_tickets (
+        INSERT INTO workflow_tickets
+        (
             workflow_type,
             wire_id,
             review_id,
@@ -524,7 +669,8 @@ def create_human_review_task(
 
     cur = conn.execute(
         """
-        INSERT INTO human_review_tasks (
+        INSERT INTO human_review_tasks
+        (
             workflow_type,
             wire_id,
             review_id,
@@ -588,6 +734,7 @@ def complete_human_review_task(
     conn.commit()
     conn.close()
 
+
 def resolve_workflow_ticket(
     ticket_id: int,
     resolved_at: str,
@@ -613,3 +760,54 @@ def resolve_workflow_ticket(
     conn.commit()
     conn.close()
 
+
+# ============================================================
+# MARYAM'S / YOUR ADDITIONAL CODE
+# ============================================================
+
+def get_customer_recent_transactions(
+    customer_id: int,
+    after_transaction_id: int | None = None,
+    limit: int = 20,
+) -> list[dict]:
+    """
+    Return recent transactions across all accounts belonging to a customer.
+
+    If after_transaction_id is provided, only transactions with a greater
+    transaction_id are returned.
+    """
+
+    conn = get_conn()
+
+    query = """
+        SELECT
+            t.transaction_id,
+            t.account_id,
+            t.type,
+            t.amount,
+            t.source,
+            t.timestamp
+        FROM transactions t
+        JOIN accounts a
+            ON a.account_id = t.account_id
+        WHERE a.customer_id = ?
+    """
+
+    params: list = [customer_id]
+
+    if after_transaction_id is not None:
+        query += " AND t.transaction_id > ?"
+        params.append(after_transaction_id)
+
+    query += """
+        ORDER BY t.transaction_id ASC
+        LIMIT ?
+    """
+
+    params.append(limit)
+
+    rows = conn.execute(query, params).fetchall()
+
+    conn.close()
+
+    return [dict(row) for row in rows]
