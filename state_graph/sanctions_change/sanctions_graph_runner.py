@@ -519,5 +519,207 @@ def main():
         print(str(e))
 
 
+import uuid
+
+
+def run_hitl_demo():
+    wire_id = 11
+    admin_id = 1
+
+    # Unique thread so every demo run starts clean
+    thread_id = f"wire-review-{wire_id}-demo-{uuid.uuid4().hex}"
+
+    print("=" * 70)
+    print("STERLING & VANCE — SANCTIONS HITL DEMO")
+    print("=" * 70)
+
+    print(f"\nThread ID: {thread_id}")
+
+    # ------------------------------------------------------------
+    # 1. Start workflow
+    # ------------------------------------------------------------
+    print(f"\n[1] Starting review for Wire #{wire_id}...")
+
+    start_review(
+        wire_id=wire_id,
+        thread_id=thread_id,
+    )
+
+    snapshot = get_review_state(
+        wire_id=wire_id,
+        thread_id=thread_id,
+    )
+
+    print("Status:", snapshot.values.get("status"))
+    print("Current node:", snapshot.values.get("current_node"))
+    print("Next:", snapshot.next)
+
+    # IMPORTANT:
+    # current_node is the node that just executed.
+    # snapshot.next tells us what LangGraph will execute next.
+    if "waiting_for_event" not in snapshot.next:
+        print("\n[ERROR] Expected workflow to wait for an external event.")
+        print("Actual current node:", snapshot.values.get("current_node"))
+        print("Actual next:", snapshot.next)
+        return
+
+    print("\n[OK] Workflow is waiting for an external event.")
+
+    # ------------------------------------------------------------
+    # 2. Get destination country
+    # ------------------------------------------------------------
+    country = snapshot.values.get("destination_country")
+
+    if not country:
+        print("\n[ERROR] Destination country not found.")
+        return
+
+    print(f"\n[2] Destination country: {country}")
+
+    # ------------------------------------------------------------
+    # 3. Get current sanctions status
+    # ------------------------------------------------------------
+    current_status = db.get_sanctions_status(country)
+    current_version = db.get_sanctions_version()
+
+    print("Current sanctions status:", current_status)
+    print("Current sanctions version:", current_version)
+
+    # ------------------------------------------------------------
+    # 4. Create REAL sanctions change
+    # ------------------------------------------------------------
+    if current_status == "SANCTIONED":
+        print("\n[3] Country is already sanctioned.")
+        print("Temporarily clearing it...")
+
+        db.update_sanctions_status(
+            country_code=country,
+            sanctioned=False,
+            timestamp=utc_now(),
+        )
+
+    print("\n[3] Creating sanctions update...")
+
+    event = db.update_sanctions_status(
+        country_code=country,
+        sanctioned=True,
+        timestamp=utc_now(),
+    )
+
+    print("External sanctions event:")
+    print(event)
+
+    if not event.get("changed"):
+        print("\n[ERROR] No sanctions change was created.")
+        return
+
+    # ------------------------------------------------------------
+    # 5. Resume after external event
+    # ------------------------------------------------------------
+    print("\n[4] Resuming workflow after sanctions update...")
+
+    resume_after_event(
+        wire_id=wire_id,
+        event_type="sanctions_update",
+        event_id=str(event["event_id"]),
+        thread_id=thread_id,
+    )
+
+    snapshot = get_review_state(
+        wire_id=wire_id,
+        thread_id=thread_id,
+    )
+
+    print("\n" + "-" * 70)
+    print("AFTER SANCTIONS UPDATE")
+    print("-" * 70)
+
+    print("Status:", snapshot.values.get("status"))
+    print("Current node:", snapshot.values.get("current_node"))
+    print("Sanctions changed:", snapshot.values.get("sanctions_changed"))
+    print("Sanctions impact:", snapshot.values.get("sanctions_impact"))
+    print("HITL required:", snapshot.values.get("hitl_required"))
+    print("HITL task ID:", snapshot.values.get("hitl_task_id"))
+    print("Next:", snapshot.next)
+
+    # ------------------------------------------------------------
+    # 6. Verify HITL
+    # ------------------------------------------------------------
+    if not snapshot.values.get("hitl_required"):
+        print("\n[ERROR] Workflow did not reach HITL.")
+        return
+
+    if "waiting_for_admin" not in snapshot.next:
+        print("\n[ERROR] HITL is required but workflow is not waiting for admin.")
+        print("Current node:", snapshot.values.get("current_node"))
+        print("Next:", snapshot.next)
+        return
+
+    print("\n[OK] Workflow reached HITL.")
+
+    print("\n" + "=" * 70)
+    print("                 HUMAN REVIEW REQUIRED")
+    print("=" * 70)
+
+    print(f"""
+Wire ID:              {wire_id}
+Destination Country:  {country}
+Sanctions Changed:    {snapshot.values.get("sanctions_changed")}
+Sanctions Impact:     {snapshot.values.get("sanctions_impact")}
+Risk Level:           {snapshot.values.get("risk_level")}
+Recommended Action:   {snapshot.values.get("recommended_action")}
+HITL Task ID:         {snapshot.values.get("hitl_task_id")}
+""")
+
+    # ------------------------------------------------------------
+    # 7. Ask admin
+    # ------------------------------------------------------------
+    while True:
+        decision = input(
+            "\nAdmin decision [approved/rejected]: "
+        ).strip().lower()
+
+        if decision in {"approved", "rejected"}:
+            break
+
+        print("Invalid decision.")
+        print("Please enter: approved or rejected")
+
+    notes = input("Notes (optional): ").strip()
+
+    # ------------------------------------------------------------
+    # 8. Resume after admin decision
+    # ------------------------------------------------------------
+    print("\n[5] Resuming workflow after admin decision...")
+
+    result = resume_after_admin(
+        wire_id=wire_id,
+        decision=decision,
+        admin_id=admin_id,
+        notes=notes,
+        thread_id=thread_id,
+    )
+
+    # ------------------------------------------------------------
+    # 9. Final state
+    # ------------------------------------------------------------
+    snapshot = get_review_state(
+        wire_id=wire_id,
+        thread_id=thread_id,
+    )
+
+    print("\n" + "=" * 70)
+    print("                    FINAL RESULT")
+    print("=" * 70)
+
+    print("Status:", snapshot.values.get("status"))
+    print("Current node:", snapshot.values.get("current_node"))
+    print("Decision:", snapshot.values.get("decision"))
+    print("HITL task ID:", snapshot.values.get("hitl_task_id"))
+    print("Next:", snapshot.next)
+
+    print("\nWorkflow result:")
+    print(result)
+
 if __name__ == "__main__":
-    main()
+    run_hitl_demo()
