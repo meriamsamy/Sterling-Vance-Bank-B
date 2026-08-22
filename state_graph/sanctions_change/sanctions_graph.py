@@ -9,12 +9,7 @@ ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-MCP_DIR = ROOT_DIR / "mcp"
-
-if str(MCP_DIR) not in sys.path:
-    sys.path.insert(0, str(MCP_DIR))
-
-import db_access as db
+from mcp_server import db_access as db
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
@@ -32,7 +27,6 @@ from state_graph.sanctions_change.sanctions_nodes import (
 from state_graph.sanctions_change.sanctions_constrained import constrained_react_node
 
 from rag.hybrid_rag import hybrid_rag
-
 # ============================================================
 # [CONDITIONAL ROUTING]
 # Graph routing depends on workflow state and failure status.

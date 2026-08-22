@@ -1058,7 +1058,7 @@ async def main():
 
     server_params = StdioServerParameters(
         command=sys.executable,
-        args=["mcp/server.py"],
+        args=["mcp_server/server.py"],
     )
 
     # ========================================================

@@ -213,13 +213,8 @@ def test_run_artifact_is_written_with_routing_trace(tmp_path, monkeypatch):
 
 
 def test_deterministic_tasks_are_backed_by_the_real_registered_mcp_tools():
-    import sys
-    from pathlib import Path
-    mcp_dir = Path(__file__).resolve().parent.parent / "mcp"
-    if str(mcp_dir) not in sys.path:
-        sys.path.insert(0, str(mcp_dir))
-    import server as mcp_server
-    import db_access as db
+    from mcp_server import server as mcp_server
+    from mcp_server import db_access as db
 
     tool_names = {tool.name for tool in mcp_server.BASE_TOOLS + mcp_server.COMPLIANCE_TOOLS}
     assert {"get_customer_accounts", "get_transaction_history", "check_sanctions"} <= tool_names

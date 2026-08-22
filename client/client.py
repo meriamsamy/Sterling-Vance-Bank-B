@@ -415,7 +415,7 @@ async def main():
     # MCP SERVER
     # ========================================================
 
-    server_params = StdioServerParameters(command="python", args=["mcp/server.py"])
+    server_params = StdioServerParameters(command="python", args=["mcp_server/server.py"])
 
     # ========================================================
     # SESSION

@@ -43,7 +43,7 @@ MODEL = os.getenv("PLANNING_MODEL", "mistral-small-latest")
 TEST_REQUESTS_FILE = EVAL_DIR / "test_requests.json"
 README_FILE = EVAL_DIR / "evaluation.md"
 ARTIFACT_DIR = EVAL_DIR / "artifacts"
-MCP_SERVER_SCRIPT = str(ROOT / "mcp" / "server.py")
+MCP_SERVER_SCRIPT = str(ROOT / "mcp_server" / "server.py")
 
 EVALUATION_START = "<!-- EVALUATION_START -->"
 EVALUATION_END = "<!-- EVALUATION_END -->"

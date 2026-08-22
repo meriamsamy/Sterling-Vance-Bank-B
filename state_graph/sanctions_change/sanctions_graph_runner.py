@@ -12,18 +12,12 @@ ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-MCP_DIR = ROOT_DIR / "mcp"
-
-if str(MCP_DIR) not in sys.path:
-    sys.path.insert(0, str(MCP_DIR))
-
-import db_access as db
+from mcp_server import db_access as db
 
 from langgraph.types import Command
-
 from state_graph.checkpointing_layer import checkpoint_context
 
-from .sanctions_graph import graph_builder
+from state_graph.sanctions_change.sanctions_graph import graph_builder
 
 
 # ============================================================

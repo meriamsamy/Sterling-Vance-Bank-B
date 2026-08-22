@@ -39,17 +39,11 @@ from __future__ import annotations
 import asyncio
 import inspect
 import re
-import sys
 import threading
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 
-_MCP_DIR = Path(__file__).resolve().parent.parent / "mcp"
-if str(_MCP_DIR) not in sys.path:
-    sys.path.insert(0, str(_MCP_DIR))
-
-import db_access as db  # noqa: E402
+from mcp_server import db_access as db
 
 from .algorithms import EvaluationEnvironment, RouteDecision, run_lats, run_plan_and_solve, run_tree_of_thoughts
 from .decomposition import TaskNode

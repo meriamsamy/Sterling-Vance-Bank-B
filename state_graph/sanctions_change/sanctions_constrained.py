@@ -44,7 +44,7 @@ client = MultiServerMCPClient(
     {
         "sterling_vance": {
             "command": "python",
-            "args": ["mcp/server.py"],
+            "args": ["mcp_server/server.py"],
             "transport": "stdio",
         }
     }
