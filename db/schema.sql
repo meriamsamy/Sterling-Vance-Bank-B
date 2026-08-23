@@ -189,6 +189,16 @@ CREATE TABLE IF NOT EXISTS human_review_tasks (
         REFERENCES employees(employee_id)
 );
 --for ui backend  
+
+-- Registry of MCP tools exposed by the server. Seeded from the real
+-- tool definitions in mcp_server/server.py, not mock data.
+CREATE TABLE IF NOT EXISTS tools (
+    tool_name TEXT PRIMARY KEY,
+    description TEXT,
+    category TEXT NOT NULL DEFAULT 'banking',
+    status TEXT NOT NULL DEFAULT 'active'
+);
+
 CREATE TABLE IF NOT EXISTS agents (
     agent_id TEXT PRIMARY KEY,
     name TEXT NOT NULL,

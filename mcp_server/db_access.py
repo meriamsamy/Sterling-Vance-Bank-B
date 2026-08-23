@@ -960,17 +960,19 @@ def add_agent_tool(
             agent_id,
             tool_name
         )
-        VALUES (?, ?)
+        SELECT ?, ?
+        WHERE EXISTS (
+            SELECT 1
+            FROM tools
+            WHERE tool_name = ?
+        )
         """,
         (
             agent_id,
             tool_name,
+            tool_name,
         ),
     )
-
-    conn.commit()
-    conn.close()
-
 
 def remove_agent_tool(
     agent_id: str,
@@ -995,3 +997,86 @@ def remove_agent_tool(
 
     conn.commit()
     conn.close()
+
+
+def get_all_tools() -> list[dict]:
+    """
+    Return all registered MCP tools.
+    """
+    conn = get_conn()
+
+    rows = conn.execute(
+        """
+        SELECT tool_name, description, category, status
+        FROM tools
+        ORDER BY tool_name
+        """
+    ).fetchall()
+
+    conn.close()
+
+    return [dict(row) for row in rows]
+
+
+def get_tool(tool_name: str) -> dict | None:
+    """
+    Return one tool by name.
+    """
+    conn = get_conn()
+
+    row = conn.execute(
+        """
+        SELECT tool_name, description, category, status
+        FROM tools
+        WHERE tool_name = ?
+        """,
+        (tool_name,),
+    ).fetchone()
+
+    conn.close()
+
+    return dict(row) if row else None
+
+
+def is_tool_assigned(agent_id: str, tool_name: str) -> bool:
+    """
+    Check whether a tool is currently assigned to an agent.
+    The MCP server calls this before allowing a tool call.
+    """
+    conn = get_conn()
+
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM agent_tools
+        WHERE agent_id = ?
+          AND tool_name = ?
+        """,
+        (agent_id, tool_name),
+    ).fetchone()
+
+    conn.close()
+
+    return row is not None
+
+
+def get_tool_assignments(tool_name: str) -> list[dict]:
+    """
+    Return all agents assigned to a given tool.
+    """
+    conn = get_conn()
+
+    rows = conn.execute(
+        """
+        SELECT a.agent_id, a.name
+        FROM agent_tools at
+        JOIN agents a ON a.agent_id = at.agent_id
+        WHERE at.tool_name = ?
+        ORDER BY a.name
+        """,
+        (tool_name,),
+    ).fetchall()
+
+    conn.close()
+
+    return [dict(row) for row in rows]
