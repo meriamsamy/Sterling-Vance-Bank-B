@@ -62,8 +62,8 @@ if str(ROOT_DIR) not in sys.path:
 import mcp_server.db_access as db  # noqa: E402
 from mcp_server.server import validate_investigation  # noqa: E402 - reused, not reimplemented
 
-from langchain_groq import ChatGroq  # noqa: E402
-from config import API_KEY  # noqa: E402
+from langchain_mistralai import ChatMistralAI  
+from config import MISTRAL_API_KEY
 
 from state_graph.suspicious_activity.investigation_nodes import (  # noqa: E402
     update_transition,
@@ -87,7 +87,11 @@ RISK_BY_LABEL = {
     "potential_money_laundering": "high",
 }
 
-llm = ChatGroq(api_key=API_KEY, model="llama-3.1-8b-instant", temperature=0.2)
+llm = ChatMistralAI(
+    api_key=MISTRAL_API_KEY,
+    model="mistral-small-latest",
+    temperature=0.2,
+)
 
 
 def _evidence_summary(state: InvestigationState) -> str:

@@ -8,7 +8,7 @@ Covers:
   - Issue "Add Investigation Database Support"
   - Issue "Implement Failure Ticket & Recovery Path"
 
-Reuses the SAME mcp/db_access.py the MCP server itself uses — this graph
+Reuses the SAME mcp_server/db_access.py the MCP server itself uses — this graph
 lives in the same repository/process, so it calls db_access directly
 rather than opening a second MCP client session against itself. No
 banking logic is duplicated: is_sanctioned / looks_like_structuring /
@@ -151,6 +151,7 @@ def create_investigation(state: InvestigationState) -> InvestigationState:
         evidence={},
         evidence_flags=[],
         missing_evidence=[],
+        evidence_arrived_externally=False,
         lats_candidates=[],
         hitl_required=False,
         hitl_task_id=None,
@@ -277,4 +278,5 @@ def ingest_new_evidence(state: InvestigationState) -> InvestigationState:
         evidence=evidence,
         missing_evidence=missing,
         new_evidence=None,
+        evidence_arrived_externally=True,
     )
