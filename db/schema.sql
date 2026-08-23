@@ -188,3 +188,19 @@ CREATE TABLE IF NOT EXISTS human_review_tasks (
     FOREIGN KEY (assigned_to)
         REFERENCES employees(employee_id)
 );
+--for ui backend  
+CREATE TABLE IF NOT EXISTS agents (
+    agent_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS agent_tools (
+    agent_id TEXT NOT NULL,
+    tool_name TEXT NOT NULL,
+    PRIMARY KEY (agent_id, tool_name),
+    FOREIGN KEY (agent_id)
+        REFERENCES agents(agent_id)
+        ON DELETE CASCADE
+);

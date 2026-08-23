@@ -28,8 +28,8 @@ STRUCTURING_COUNT = 3
 def get_conn():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
     return conn
-
 
 def get_employee(employee_id: int):
     conn = get_conn()
@@ -811,3 +811,187 @@ def get_customer_recent_transactions(
     conn.close()
 
     return [dict(row) for row in rows]
+
+# ============================================================
+# UI / Backend - Agent Management
+# ============================================================
+
+def get_agents() -> list[dict]:
+    """
+    Return all registered agents.
+    Used by the UI/backend to display available agents.
+    """
+    conn = get_conn()
+
+    rows = conn.execute(
+        """
+        SELECT
+            agent_id,
+            name,
+            description,
+            created_at
+        FROM agents
+        ORDER BY name
+        """
+    ).fetchall()
+
+    conn.close()
+
+    return [dict(row) for row in rows]
+
+
+def get_agent(agent_id: str):
+    """
+    Return one agent by ID.
+    """
+    conn = get_conn()
+
+    row = conn.execute(
+        """
+        SELECT
+            agent_id,
+            name,
+            description,
+            created_at
+        FROM agents
+        WHERE agent_id = ?
+        """,
+        (agent_id,),
+    ).fetchone()
+
+    conn.close()
+
+    return dict(row) if row else None
+
+
+def create_agent(
+    agent_id: str,
+    name: str,
+    description: str | None,
+    created_at: str,
+):
+    """
+    Register a new agent.
+    """
+    conn = get_conn()
+
+    conn.execute(
+        """
+        INSERT INTO agents
+        (
+            agent_id,
+            name,
+            description,
+            created_at
+        )
+        VALUES (?, ?, ?, ?)
+        """,
+        (
+            agent_id,
+            name,
+            description,
+            created_at,
+        ),
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def delete_agent(agent_id: str):
+    """
+    Delete an agent.
+
+    Because agent_tools.agent_id references agents.agent_id
+    with ON DELETE CASCADE, all tools assigned to this agent
+    are deleted automatically.
+    """
+    conn = get_conn()
+
+    conn.execute(
+        """
+        DELETE FROM agents
+        WHERE agent_id = ?
+        """,
+        (agent_id,),
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def get_agent_tools(agent_id: str) -> list[str]:
+    """
+    Return the names of all tools currently assigned to an agent.
+    """
+    conn = get_conn()
+
+    rows = conn.execute(
+        """
+        SELECT tool_name
+        FROM agent_tools
+        WHERE agent_id = ?
+        ORDER BY tool_name
+        """,
+        (agent_id,),
+    ).fetchall()
+
+    conn.close()
+
+    return [row["tool_name"] for row in rows]
+
+
+def add_agent_tool(
+    agent_id: str,
+    tool_name: str,
+):
+    """
+    Assign a tool to an agent.
+
+    INSERT OR IGNORE prevents duplicate assignments because
+    (agent_id, tool_name) is the primary key.
+    """
+    conn = get_conn()
+
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO agent_tools
+        (
+            agent_id,
+            tool_name
+        )
+        VALUES (?, ?)
+        """,
+        (
+            agent_id,
+            tool_name,
+        ),
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def remove_agent_tool(
+    agent_id: str,
+    tool_name: str,
+):
+    """
+    Remove a tool from an agent.
+    """
+    conn = get_conn()
+
+    conn.execute(
+        """
+        DELETE FROM agent_tools
+        WHERE agent_id = ?
+          AND tool_name = ?
+        """,
+        (
+            agent_id,
+            tool_name,
+        ),
+    )
+
+    conn.commit()
+    conn.close()
