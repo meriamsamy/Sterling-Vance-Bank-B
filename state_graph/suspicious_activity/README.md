@@ -130,7 +130,7 @@ see the search, not just the answer.
 
 **The LLM is not the final source of truth.** Whatever candidate LATS
 lands on is passed to `validate_investigation()` — the exact grounded,
-DB-backed validator `mcp/server.py` already exposes as an MCP tool — and
+DB-backed validator `mcp_server/server.py` already exposes as an MCP tool — and
 if validation fails, confidence is reduced accordingly before risk/HITL
 routing happens.
 
@@ -218,16 +218,16 @@ any other graph's).
 Reused as-is: `get_customer_accounts`, `get_transaction_history`,
 `check_sanctions`, `get_account`, `validate_investigation`.
 
-New (added in `mcp/db_access.py` / `mcp/schemas.py` / `mcp/server.py`):
+New (added in `mcp_server/db_access.py` / `mcp_server/schemas.py` / `mcp_server/server.py`):
 `get_related_employees`, `get_customer_wire_transfers` (full wire rows —
 `get_wire_destination_countries` only returns country codes, not enough
 for LATS to reason over amounts/status/timing), plus the investigation
 lifecycle operations (`create_investigation`, `get_investigation`,
 `submit_investigation_evidence`).
 
-The graph calls these through `mcp/db_access.py` directly rather than
+The graph calls these through `mcp_server/db_access.py` directly rather than
 opening a second MCP client session against itself — it lives in the
 same repository/process the MCP server does, so no banking logic is
 duplicated, just called without an extra network hop. `validate_investigation`
-is imported the same way, directly from `mcp/server.py`, so it's the
+is imported the same way, directly from `mcp_server/server.py`, so it's the
 exact same grounded validator a real MCP client would call.
