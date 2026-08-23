@@ -38,6 +38,7 @@ class InvestigationState(TypedDict, total=False):
 
     # ---- external evidence arriving later (WAITING_FOR_EVIDENCE cycle) ----
     new_evidence: dict[str, Any] | None
+    evidence_arrived_externally: bool
 
     # ---- LATS reassessment (REASSESS_INVESTIGATION) ----
     lats_candidates: list[dict[str, Any]]

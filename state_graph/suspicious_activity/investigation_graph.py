@@ -14,7 +14,7 @@ Shape:
     analyze_evidence  <---------------------+
           |                                 |
     [missing_evidence?]                     |
-       /            \                       |
+       /             |                      |
       NO             YES                    |
       |               |                     |
       v               v                     |
@@ -31,8 +31,8 @@ Shape:
     ^         [admin_decision?]
     |          /      |      \
     |     approve  reject  more_evidence
-    |         \      /          |
-    +----------+----+           v
+    |         /      /          |
+    +---------+-----+           v
                           wait_for_evidence
 
 wait_for_evidence and waiting_for_admin are the two genuine pauses —

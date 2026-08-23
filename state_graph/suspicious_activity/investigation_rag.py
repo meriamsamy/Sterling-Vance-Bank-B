@@ -21,16 +21,24 @@ Why RAG belongs here and not in REASSESS_INVESTIGATION:
 Sufficiency rule, grounded in what evidence actually is available:
     collect_initial_evidence() only pulls from the bank's OWN database.
     Documents, tips, and explanations from outside the bank can't come
-    from that node — by construction. So "evidence insufficient" here
-    means specifically: nothing in the bank's own transaction/wire data
+    from that node — by construction. So "evidence insufficient" means
+    specifically: nothing in the bank's own transaction/wire data
     corroborates the reason the investigation was opened (evidence_flags
-    is empty). If a concrete flag *is* present (sanctions/structuring/
-    self_dealing), that is real grounded evidence, sufficient to move on
-    to REASSESS_INVESTIGATION — RAG is still used to retrieve which
-    policy section applies and what role must review it, which becomes
-    part of the analysis and later informs the HITL escalation reason.
+    is empty) AND no external evidence has arrived yet either
+    (evidence_arrived_externally is False). Either a concrete DB flag or
+    a completed trip through the wait_for_evidence/ingest_new_evidence
+    cycle is enough to move on to REASSESS_INVESTIGATION — RAG is still
+    used to retrieve which policy section applies, which becomes part
+    of the analysis and later informs the HITL escalation reason.
 """
 from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+ROOT_DIR = Path(__file__).resolve().parents[2]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 from rag.hybrid_rag import hybrid_rag  # noqa: E402
 
@@ -56,8 +64,9 @@ NO_FLAGS_QUESTION = (
 
 def analyze_evidence(state: InvestigationState) -> InvestigationState:
     flags = state.get("evidence_flags") or []
+    already_have_external = bool(state.get("evidence_arrived_externally"))
 
-    if not flags:
+    if not flags and not already_have_external:
         # Nothing in the bank's own data corroborates the reason this
         # investigation was opened. That's a genuine "we have nothing
         # concrete to reason over yet" case — RAG still grounds *why*
@@ -79,10 +88,12 @@ def analyze_evidence(state: InvestigationState) -> InvestigationState:
             missing_evidence=["corroborating_report_or_external_evidence"],
         )
 
-    # At least one concrete, DB-grounded flag exists. Retrieve the
-    # applicable policy section per flag so the eventual HITL/closure
-    # reasoning is explicitly grounded in policy text, not just the raw
-    # flag name.
+    # Either a concrete DB-grounded flag exists, or external evidence
+    # has since arrived to corroborate the original report — either way
+    # there's now something to reason over. Retrieve the applicable
+    # policy section per flag (if any) so the eventual HITL/closure
+    # reasoning is explicitly grounded in policy text, not just raw
+    # flag names.
     analysis_parts: list[str] = []
     context_parts: list[str] = []
 
@@ -95,8 +106,18 @@ def analyze_evidence(state: InvestigationState) -> InvestigationState:
         if result.get("context"):
             context_parts.append(result["context"])
 
+    if not flags and already_have_external:
+        result = hybrid_rag(NO_FLAGS_QUESTION)
+        analysis_parts.append(
+            f"[external_evidence] No DB-grounded flag, but external "
+            f"corroborating evidence has been submitted. Grounded policy "
+            f"guidance: {result['answer']}"
+        )
+        if result.get("context"):
+            context_parts.append(result["context"])
+
     analysis = (
-        f"Grounded evidence found: {', '.join(flags)}. "
+        f"Grounded evidence found: {', '.join(flags) or 'none (external evidence only)'}. "
         + " ".join(analysis_parts)
     )
 
