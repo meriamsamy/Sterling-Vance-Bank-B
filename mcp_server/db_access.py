@@ -941,16 +941,7 @@ def get_agent_tools(agent_id: str) -> list[str]:
     return [row["tool_name"] for row in rows]
 
 
-def add_agent_tool(
-    agent_id: str,
-    tool_name: str,
-):
-    """
-    Assign a tool to an agent.
-
-    INSERT OR IGNORE prevents duplicate assignments because
-    (agent_id, tool_name) is the primary key.
-    """
+def add_agent_tool(agent_id: str, tool_name: str):
     conn = get_conn()
 
     conn.execute(
@@ -973,6 +964,9 @@ def add_agent_tool(
             tool_name,
         ),
     )
+
+    conn.commit()
+    conn.close()
 
 def remove_agent_tool(
     agent_id: str,
@@ -1080,3 +1074,106 @@ def get_tool_assignments(tool_name: str) -> list[dict]:
     conn.close()
 
     return [dict(row) for row in rows]
+
+def get_agents_with_tools() -> list[dict]:
+    conn = get_conn()
+
+    rows = conn.execute(
+        """
+        SELECT
+            a.agent_id,
+            a.name,
+            a.description,
+            a.created_at,
+            COUNT(at.tool_name) as tool_count
+        FROM agents a
+        LEFT JOIN agent_tools at
+        ON a.agent_id = at.agent_id
+        GROUP BY a.agent_id
+        ORDER BY a.name
+        """
+    ).fetchall()
+
+    conn.close()
+
+    return [dict(row) for row in rows]
+
+def get_available_tools_for_agent(agent_id: str):
+
+    conn = get_conn()
+
+    rows = conn.execute(
+        """
+        SELECT
+            t.tool_name,
+            t.description,
+            t.category,
+            CASE
+                WHEN at.agent_id IS NOT NULL
+                THEN 1
+                ELSE 0
+            END AS assigned
+        FROM tools t
+        LEFT JOIN agent_tools at
+        ON t.tool_name = at.tool_name
+        AND at.agent_id = ?
+
+        ORDER BY t.tool_name
+        """,
+        (agent_id,)
+    ).fetchall()
+
+    conn.close()
+
+    return [dict(row) for row in rows]
+
+def get_active_tools():
+    conn = get_conn()
+    rows = conn.execute(
+        """
+        SELECT
+            tool_name,
+            description,
+            category,
+            status
+        FROM tools
+        WHERE status = 'active'
+        ORDER BY tool_name
+        """
+    ).fetchall()
+    conn.close()
+
+    return [
+        dict(row)
+        for row in rows
+    ]
+
+
+def get_active_tools_for_agent(agent_id: str):
+    """
+    Return active MCP tools assigned to a specific agent.
+    Used by MCP server runtime to build agent-specific tool registry.
+    """
+    conn = get_conn()
+    rows = conn.execute(
+        """
+        SELECT
+            t.tool_name,
+            t.description,
+            t.category,
+            t.status
+        FROM tools t
+        JOIN agent_tools at
+            ON t.tool_name = at.tool_name
+        WHERE at.agent_id = ?
+          AND t.status = 'active'
+        ORDER BY t.tool_name
+        """,
+        (agent_id,)
+    ).fetchall()
+    conn.close()
+
+    return [
+        dict(row)
+        for row in rows
+    ]
