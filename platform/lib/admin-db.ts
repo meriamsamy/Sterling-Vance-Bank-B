@@ -326,3 +326,34 @@ export function getWorkflowTickets(): WorkflowTicketRow[] {
 
   return rows;
 }
+export function resolveWorkflowTicket(ticketId: number): void {
+  db()
+    .prepare(
+      `
+      UPDATE workflow_tickets
+      SET
+        status = 'resolved',
+        resolved_at = CURRENT_TIMESTAMP
+      WHERE ticket_id = ?
+      `
+    )
+    .run(ticketId);
+}
+export function completeHumanReviewTask(
+  taskId: number,
+  decision: 'approved' | 'rejected',
+  notes: string | null = null
+): void {
+  db()
+    .prepare(`
+      UPDATE human_review_tasks
+      SET
+        status = 'completed',
+        decision = ?,
+        notes = ?,
+        completed_at = CURRENT_TIMESTAMP
+      WHERE task_id = ?
+        AND status != 'completed'
+    `)
+    .run(decision, notes, taskId);
+}

@@ -3,88 +3,106 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 
-type WorkflowTicket = {
+type HumanReviewTask = {
   id: number;
   workflowType: string;
   wireId: number | null;
   reviewId: number | null;
   status: string;
-  errorType: string | null;
-  errorMessage: string | null;
-  failedNode: string | null;
+  reason: string;
+  recommendedAction: string | null;
+  assignedTo: number | null;
+  decision: string | null;
+  notes: string | null;
   createdAt: string;
-  resolvedAt: string | null;
+  completedAt: string | null;
 };
 
-export default function TicketsPage() {
-  const [tickets, setTickets] = useState<WorkflowTicket[]>([]);
+export default function HITLPage() {
+  const [tasks, setTasks] = useState<HumanReviewTask[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [resolvingId, setResolvingId] = useState<number | null>(null);
+  const [processingId, setProcessingId] = useState<number | null>(null);
 
   useEffect(() => {
-    async function loadTickets() {
+    async function loadTasks() {
       try {
-        const res = await fetch('/api/admin/tickets');
+        const res = await fetch('/api/admin/hitl');
 
         if (!res.ok) {
-          throw new Error('Failed to load tickets');
+          throw new Error('Failed to load HITL tasks');
         }
 
         const data = await res.json();
-        setTickets(data);
+        setTasks(data);
       } catch (err) {
         console.error(err);
-        setError('Failed to load workflow tickets.');
+        setError('Failed to load HITL tasks.');
       } finally {
         setLoading(false);
       }
     }
 
-    loadTickets();
+    loadTasks();
   }, []);
 
-  const handleResolve = async (ticketId: number) => {
+  async function handleDecision(
+    taskId: number,
+    decision: 'approved' | 'rejected'
+  ) {
     try {
-      setResolvingId(ticketId);
+      setProcessingId(taskId);
 
-      const res = await fetch('/api/admin/tickets/resolve', {
+      const res = await fetch('/api/admin/hitl', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ ticketId }),
+        body: JSON.stringify({
+          taskId,
+          decision,
+        }),
       });
 
       if (!res.ok) {
-        throw new Error('Failed to resolve ticket');
+        const data = await res.json().catch(() => null);
+
+        throw new Error(
+          data?.detail || 'Failed to submit HITL decision'
+        );
       }
 
-      setTickets((prev) =>
-        prev.map((ticket) =>
-          ticket.id === ticketId
+      setTasks((prev) =>
+        prev.map((task) =>
+          task.id === taskId
             ? {
-                ...ticket,
-                status: 'resolved',
-                resolvedAt: new Date().toISOString(),
+                ...task,
+                status: 'completed',
+                decision,
+                completedAt: new Date().toISOString(),
               }
-            : ticket
+            : task
         )
       );
     } catch (err) {
       console.error(err);
-      alert('Failed to resolve ticket.');
-    } finally {
-      setResolvingId(null);
-    }
-  };
 
-  const openTickets = tickets.filter(
-    (ticket) => ticket.status !== 'resolved'
+      alert(
+        err instanceof Error
+          ? err.message
+          : 'Failed to submit HITL decision'
+      );
+    } finally {
+      setProcessingId(null);
+    }
+  }
+
+  const pendingTasks = tasks.filter(
+    (task) => task.status !== 'completed'
   );
 
-  const resolvedTickets = tickets.filter(
-    (ticket) => ticket.status === 'resolved'
+  const completedTasks = tasks.filter(
+    (task) => task.status === 'completed'
   );
 
   return (
@@ -95,11 +113,11 @@ export default function TicketsPage() {
         <div className="mb-8 flex items-center justify-between">
           <div>
             <h1 className="text-3xl font-bold">
-              Workflow Tickets
+              Human-in-the-Loop
             </h1>
 
             <p className="mt-2 text-muted-foreground">
-              Monitor workflow failures and recovery tickets.
+              Review workflow decisions that require human approval.
             </p>
           </div>
 
@@ -116,31 +134,31 @@ export default function TicketsPage() {
 
           <div className="rounded-xl border p-5">
             <p className="text-sm text-muted-foreground">
-              Total Tickets
+              Total Tasks
             </p>
 
             <p className="mt-2 text-2xl font-bold">
-              {tickets.length}
+              {tasks.length}
             </p>
           </div>
 
           <div className="rounded-xl border p-5">
             <p className="text-sm text-muted-foreground">
-              Open Tickets
+              Pending Review
             </p>
 
             <p className="mt-2 text-2xl font-bold">
-              {openTickets.length}
+              {pendingTasks.length}
             </p>
           </div>
 
           <div className="rounded-xl border p-5">
             <p className="text-sm text-muted-foreground">
-              Resolved
+              Completed
             </p>
 
             <p className="mt-2 text-2xl font-bold">
-              {resolvedTickets.length}
+              {completedTasks.length}
             </p>
           </div>
 
@@ -150,7 +168,7 @@ export default function TicketsPage() {
         {loading && (
           <div className="rounded-xl border p-6">
             <p className="text-muted-foreground">
-              Loading workflow tickets...
+              Loading HITL tasks...
             </p>
           </div>
         )}
@@ -165,54 +183,54 @@ export default function TicketsPage() {
         )}
 
         {/* Empty */}
-        {!loading && !error && tickets.length === 0 && (
+        {!loading && !error && tasks.length === 0 && (
           <div className="rounded-xl border p-8 text-center">
             <h2 className="font-semibold">
-              No workflow tickets
+              No HITL tasks
             </h2>
 
             <p className="mt-2 text-sm text-muted-foreground">
-              There are currently no workflow failures recorded.
+              There are currently no human review tasks.
             </p>
           </div>
         )}
 
-        {/* Tickets */}
-        {!loading && !error && tickets.length > 0 && (
+        {/* Tasks */}
+        {!loading && !error && tasks.length > 0 && (
           <div className="space-y-4">
 
-            {tickets.map((ticket) => (
+            {tasks.map((task) => (
               <div
-                key={ticket.id}
+                key={task.id}
                 className="rounded-xl border p-6"
               >
 
-                {/* Ticket header */}
+                {/* Task Header */}
                 <div className="flex items-start justify-between gap-4">
 
                   <div>
                     <h2 className="font-semibold">
-                      Ticket #{ticket.id}
+                      HITL Task #{task.id}
                     </h2>
 
                     <p className="mt-1 text-sm text-muted-foreground">
-                      {ticket.workflowType}
+                      {task.workflowType}
                     </p>
                   </div>
 
                   <span
                     className={`rounded-full px-3 py-1 text-xs font-semibold ${
-                      ticket.status === 'resolved'
+                      task.status === 'completed'
                         ? 'bg-green-100 text-green-700'
-                        : 'bg-red-100 text-red-700'
+                        : 'bg-yellow-100 text-yellow-700'
                     }`}
                   >
-                    {ticket.status}
+                    {task.status}
                   </span>
 
                 </div>
 
-                {/* Ticket information */}
+                {/* Task Information */}
                 <div className="mt-5 grid gap-4 md:grid-cols-2">
 
                   <div>
@@ -221,7 +239,7 @@ export default function TicketsPage() {
                     </p>
 
                     <p className="mt-1 text-sm">
-                      {ticket.wireId ?? '—'}
+                      {task.wireId ?? '—'}
                     </p>
                   </div>
 
@@ -231,27 +249,37 @@ export default function TicketsPage() {
                     </p>
 
                     <p className="mt-1 text-sm">
-                      {ticket.reviewId ?? '—'}
+                      {task.reviewId ?? '—'}
                     </p>
                   </div>
 
                   <div>
                     <p className="text-xs text-muted-foreground">
-                      Error Type
+                      Reason
                     </p>
 
                     <p className="mt-1 text-sm">
-                      {ticket.errorType ?? '—'}
+                      {task.reason}
                     </p>
                   </div>
 
                   <div>
                     <p className="text-xs text-muted-foreground">
-                      Failed Node
+                      Recommended Action
                     </p>
 
                     <p className="mt-1 text-sm">
-                      {ticket.failedNode ?? '—'}
+                      {task.recommendedAction ?? '—'}
+                    </p>
+                  </div>
+
+                  <div>
+                    <p className="text-xs text-muted-foreground">
+                      Assigned To
+                    </p>
+
+                    <p className="mt-1 text-sm">
+                      {task.assignedTo ?? 'Unassigned'}
                     </p>
                   </div>
 
@@ -261,51 +289,88 @@ export default function TicketsPage() {
                     </p>
 
                     <p className="mt-1 text-sm">
-                      {ticket.createdAt}
+                      {task.createdAt}
                     </p>
                   </div>
 
                   <div>
                     <p className="text-xs text-muted-foreground">
-                      Resolved At
+                      Decision
                     </p>
 
                     <p className="mt-1 text-sm">
-                      {ticket.resolvedAt ?? 'Not resolved'}
+                      {task.decision ?? 'No decision yet'}
+                    </p>
+                  </div>
+
+                  <div>
+                    <p className="text-xs text-muted-foreground">
+                      Completed At
+                    </p>
+
+                    <p className="mt-1 text-sm">
+                      {task.completedAt ?? 'Not completed'}
                     </p>
                   </div>
 
                 </div>
 
-                {/* Error message */}
-                {ticket.errorMessage && (
+                {/* Notes */}
+                {task.notes && (
                   <div className="mt-5 rounded-lg bg-muted p-4">
-
                     <p className="text-xs font-semibold">
-                      Error Message
+                      Notes
                     </p>
 
                     <p className="mt-2 text-sm text-muted-foreground">
-                      {ticket.errorMessage}
+                      {task.notes}
                     </p>
+                  </div>
+                )}
+
+                {/* APPROVE / REJECT */}
+                {task.status !== 'completed' && (
+                  <div className="mt-6 flex gap-3 border-t pt-5">
+
+                    <button
+                      onClick={() =>
+                        handleDecision(task.id, 'approved')
+                      }
+                      disabled={processingId === task.id}
+                      className="rounded-md bg-green-600 px-5 py-2 text-sm font-semibold text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {processingId === task.id
+                        ? 'Processing...'
+                        : 'Approve'}
+                    </button>
+
+                    <button
+                      onClick={() =>
+                        handleDecision(task.id, 'rejected')
+                      }
+                      disabled={processingId === task.id}
+                      className="rounded-md bg-red-600 px-5 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {processingId === task.id
+                        ? 'Processing...'
+                        : 'Reject'}
+                    </button>
 
                   </div>
                 )}
 
-                {/* Resolve button */}
-                {ticket.status !== 'resolved' && (
-                  <div className="mt-5 flex justify-end">
+                {/* Decision Result */}
+                {task.status === 'completed' && (
+                  <div className="mt-6 rounded-lg border p-4">
+                    <p className="text-sm font-semibold">
+                      Human Decision
+                    </p>
 
-                    <button
-                      onClick={() => handleResolve(ticket.id)}
-                      disabled={resolvingId === ticket.id}
-                      className="rounded-md bg-green-600 px-4 py-2 text-sm font-semibold text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {resolvingId === ticket.id
-                        ? 'Resolving...'
-                        : 'Resolve'}
-                    </button>
-
+                    <p className="mt-1 text-sm">
+                      {task.decision === 'approved'
+                        ? 'Approved'
+                        : 'Rejected'}
+                    </p>
                   </div>
                 )}
 

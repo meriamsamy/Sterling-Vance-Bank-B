@@ -24,11 +24,29 @@ type WorkflowTicket = {
   resolvedAt: string | null;
 };
 
+type HITLTask = {
+  id: number;
+  workflowType: string;
+  wireId: number | null;
+  reviewId: number | null;
+  status: string;
+  reason: string;
+  recommendedAction: string | null;
+  assignedTo: number | null;
+  decision: string | null;
+  notes: string | null;
+  createdAt: string;
+  completedAt: string | null;
+};
+
 export default function AdminPage() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [tickets, setTickets] = useState<WorkflowTicket[]>([]);
+  const [hitlTasks, setHitlTasks] = useState<HITLTask[]>([]);
+
   const [loading, setLoading] = useState(true);
   const [ticketsLoading, setTicketsLoading] = useState(true);
+  const [hitlLoading, setHitlLoading] = useState(true);
 
   useEffect(() => {
     async function loadAgents() {
@@ -50,7 +68,7 @@ export default function AdminPage() {
 
     async function loadTickets() {
       try {
-        const res = await fetch('/api/admin/tickets')
+        const res = await fetch('/api/admin/tickets');
 
         if (!res.ok) {
           throw new Error('Failed to load tickets');
@@ -65,18 +83,43 @@ export default function AdminPage() {
       }
     }
 
+    async function loadHITL() {
+      try {
+        const res = await fetch('/api/admin/hitl');
+
+        if (!res.ok) {
+          throw new Error('Failed to load HITL tasks');
+        }
+
+        const data = await res.json();
+        setHitlTasks(data);
+      } catch (error) {
+        console.error(error);
+      } finally {
+        setHitlLoading(false);
+      }
+    }
+
     loadAgents();
     loadTickets();
+    loadHITL();
   }, []);
 
   const openTickets = tickets.filter(
     (ticket) => ticket.status !== 'resolved'
   ).length;
 
+  const pendingHITL = hitlTasks.filter(
+    (task) =>
+      task.status !== 'completed' &&
+      task.status !== 'resolved'
+  ).length;
+
   return (
     <div className="min-h-screen bg-background p-8">
       <div className="mx-auto max-w-5xl">
 
+        {/* Header */}
         <div className="mb-8 flex items-center justify-between">
           <div>
             <h1 className="text-3xl font-bold">
@@ -84,7 +127,8 @@ export default function AdminPage() {
             </h1>
 
             <p className="mt-2 text-muted-foreground">
-              Manage agents, tools, RAG documents, and workflow tickets.
+              Manage agents, tools, RAG documents, human reviews,
+              and workflow tickets.
             </p>
           </div>
 
@@ -99,7 +143,6 @@ export default function AdminPage() {
         <div className="grid gap-6 md:grid-cols-3">
 
           {/* Agents */}
-
           <div className="rounded-xl border p-6 md:col-span-3">
             <h2 className="mb-4 text-lg font-semibold">
               Agents
@@ -156,7 +199,6 @@ export default function AdminPage() {
           </div>
 
           {/* Tools */}
-
           <div className="rounded-xl border p-6">
             <h2 className="text-lg font-semibold">
               Tools
@@ -175,7 +217,6 @@ export default function AdminPage() {
           </div>
 
           {/* RAG */}
-
           <div className="rounded-xl border p-6">
             <h2 className="text-lg font-semibold">
               RAG Documents
@@ -193,8 +234,42 @@ export default function AdminPage() {
             </Link>
           </div>
 
-          {/* Workflow Tickets */}
+          {/* HITL */}
+          <div className="rounded-xl border p-6">
+            <div className="flex items-start justify-between">
+              <h2 className="text-lg font-semibold">
+                Human Review
+              </h2>
 
+              {!hitlLoading && pendingHITL > 0 && (
+                <span className="rounded-full bg-yellow-100 px-2 py-1 text-xs font-semibold text-yellow-700">
+                  {pendingHITL} pending
+                </span>
+              )}
+            </div>
+
+            <p className="mt-2 text-sm text-muted-foreground">
+              Review workflow decisions that require human approval.
+            </p>
+
+            {!hitlLoading && (
+              <p className="mt-3 text-sm">
+                Total tasks:
+                <span className="ml-1 font-semibold">
+                  {hitlTasks.length}
+                </span>
+              </p>
+            )}
+
+            <Link
+              href="/admin/hitl"
+              className="mt-4 inline-block rounded-md border px-3 py-1 text-sm hover:bg-muted"
+            >
+              Open HITL
+            </Link>
+          </div>
+
+          {/* Workflow Tickets */}
           <div className="rounded-xl border p-6">
             <div className="flex items-start justify-between">
               <h2 className="text-lg font-semibold">
