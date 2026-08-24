@@ -76,6 +76,28 @@ from state_graph.customer_risk.graph import build_customer_risk_graph
 
 from state_graph.sanctions_change.sanctions_graph import graph_builder
 
+# ISSUE #98 completion (HITL / failure-ticket surfacing):
+# sanctions_graph_runner.py already has a full, DURABLE
+# (checkpoint_context-backed, not the in-memory MemorySaver used
+# below for /invoke) implementation of "read the paused state" /
+# "resume after an admin decision" / "resume after a ticket is
+# resolved". We reuse it as-is instead of reinventing thread
+# reconstruction here - it's already correct and it's what makes
+# the paused state survive a server restart, which an in-memory
+# checkpointer cannot do.
+#
+# We import the *_async variants (not resume_after_admin /
+# get_review_state / resume_after_ticket_resolution) because those
+# public wrappers call asyncio.run(...) internally, which raises
+# if called from inside a FastAPI async handler that's already
+# running inside an event loop.
+from state_graph.sanctions_change.sanctions_graph_runner import (
+    default_thread_id as sanctions_default_thread_id,
+    _get_review_state_async as sanctions_get_review_state,
+    _resume_after_admin_async as sanctions_resume_after_admin,
+    _resume_after_ticket_resolution_async as sanctions_resume_after_ticket,
+)
+
 
 # ============================================================
 # CUSTOMER RISK GRAPH
@@ -1581,7 +1603,10 @@ async def admin_list_agents():
     """Every agent that has ever self-registered, each with its
     currently assigned tools and whether it is connected right
     now (i.e. has a live MCP session on this process)."""
-    agents = db.list_agents()
+    # BUG FIX: db_access.py's real function is get_agents(), not
+    # list_agents() - this line was raising AttributeError on every
+    # call before this fix.
+    agents = db.get_agents()
 
     return [
         {
@@ -1616,7 +1641,9 @@ async def admin_assign_tool(agent_id: str, body: ToolAssignRequest):
             status_code=400, detail=f"Unknown tool: {body.tool_name}"
         )
 
-    db.assign_tool_to_agent(agent_id, body.tool_name)
+    # BUG FIX: db_access.py's real function is add_agent_tool(), not
+    # assign_tool_to_agent() - same AttributeError issue as above.
+    db.add_agent_tool(agent_id, body.tool_name)
     await _notify_agent_tools_changed(agent_id)
 
     return {
@@ -1631,12 +1658,277 @@ async def admin_unassign_tool(agent_id: str, tool_name: str):
     if agent is None:
         raise HTTPException(status_code=404, detail="Unknown agent.")
 
-    db.remove_tool_from_agent(agent_id, tool_name)
+    # BUG FIX: db_access.py's real function is remove_agent_tool(),
+    # not remove_tool_from_agent().
+    db.remove_agent_tool(agent_id, tool_name)
     await _notify_agent_tools_changed(agent_id)
 
     return {
         "agent_id": agent_id,
         "assigned_tools": db.get_agent_tools(agent_id),
+    }
+
+
+# ============================================================
+# ADMIN: HITL TASKS & WORKFLOW TICKETS (ISSUE #98 completion)
+# ============================================================
+#
+# Completes the third admin bullet: an admin opens a pending HITL
+# request or an open failure ticket, sees the graph's persisted
+# state at the point it paused/failed, acts on it, and the
+# underlying run resumes.
+#
+# Scope: wired up for workflow_type == "sanctions_review" only -
+# that's the sanctions_change durable workflow, whose runner
+# (sanctions_graph_runner.py) already has a real checkpointer and
+# real resume functions. human_review_tasks / workflow_tickets rows
+# created by the suspicious_activity/investigation graph use a
+# different workflow_type and a different graph instance; wiring
+# those up is a separate, later change - the detail endpoints below
+# say so explicitly for that workflow_type instead of silently
+# doing nothing.
+#
+# human_review_tasks / workflow_tickets don't have db_access.py
+# getters for a single row by id (only create/complete/resolve), so
+# small local read helpers are added here rather than guessing at
+# a db_access.py change that wasn't requested this round.
+
+def _get_human_review_task(task_id: int) -> dict | None:
+    conn = db.get_conn()
+    row = conn.execute(
+        "SELECT * FROM human_review_tasks WHERE task_id = ?",
+        (task_id,),
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def _list_human_review_tasks() -> list[dict]:
+    conn = db.get_conn()
+    rows = conn.execute(
+        "SELECT * FROM human_review_tasks ORDER BY created_at DESC"
+    ).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def _get_workflow_ticket(ticket_id: int) -> dict | None:
+    conn = db.get_conn()
+    row = conn.execute(
+        "SELECT * FROM workflow_tickets WHERE ticket_id = ?",
+        (ticket_id,),
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def _list_workflow_tickets() -> list[dict]:
+    conn = db.get_conn()
+    rows = conn.execute(
+        "SELECT * FROM workflow_tickets ORDER BY created_at DESC"
+    ).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def _serialize_graph_snapshot(snapshot) -> dict:
+    """The bits of a LangGraph StateSnapshot that are actually
+    useful to an admin looking at a paused/failed run: the full
+    persisted state values, and what node(s) it's waiting on."""
+    return {
+        "values": snapshot.values,
+        "next": list(snapshot.next),
+        "is_paused": bool(snapshot.next),
+    }
+
+
+SANCTIONS_WORKFLOW_TYPE = "sanctions_review"
+
+
+@app.get("/admin/hitl")
+async def admin_list_hitl_tasks():
+    """Every HITL task, oldest-decision-needed-ish ordering left to
+    the frontend (createdAt is included) - both pending and
+    completed, so the admin platform can show the full history."""
+    return _list_human_review_tasks()
+
+
+@app.get("/admin/hitl/{task_id}")
+async def admin_get_hitl_task(task_id: int):
+    """A single HITL task plus the graph's persisted state at
+    (or since) the point it paused - not just the DB row."""
+    task = _get_human_review_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Unknown HITL task.")
+
+    if task["workflow_type"] != SANCTIONS_WORKFLOW_TYPE:
+        return {
+            "task": task,
+            "graph_state": None,
+            "note": (
+                f"Live graph-state lookup isn't wired up for "
+                f"workflow_type={task['workflow_type']!r} yet - only "
+                f"{SANCTIONS_WORKFLOW_TYPE!r} is."
+            ),
+        }
+
+    thread_id = sanctions_default_thread_id(task["wire_id"])
+    snapshot = await sanctions_get_review_state(
+        wire_id=task["wire_id"],
+        thread_id=thread_id,
+    )
+
+    return {
+        "task": task,
+        "thread_id": thread_id,
+        "graph_state": _serialize_graph_snapshot(snapshot),
+    }
+
+
+class HitlDecisionRequest(BaseModel):
+    decision: str  # "approved" | "rejected" | "modified"
+    admin_id: int
+    notes: str = ""
+
+
+@app.post("/admin/hitl/{task_id}/resume")
+async def admin_resume_hitl_task(task_id: int, body: HitlDecisionRequest):
+    """Act on a pending HITL task and resume the exact paused run.
+
+    This calls back into the SAME durable graph/checkpointer that
+    paused it (via sanctions_graph_runner) - it is not starting a
+    new run, it's continuing the interrupted one from its persisted
+    checkpoint."""
+    task = _get_human_review_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Unknown HITL task.")
+
+    if task["workflow_type"] != SANCTIONS_WORKFLOW_TYPE:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Resume isn't wired up for workflow_type="
+                f"{task['workflow_type']!r} yet."
+            ),
+        )
+
+    if task["status"] == "completed":
+        raise HTTPException(
+            status_code=400,
+            detail="This HITL task is already completed.",
+        )
+
+    try:
+        result = await sanctions_resume_after_admin(
+            wire_id=task["wire_id"],
+            decision=body.decision,
+            admin_id=body.admin_id,
+            notes=body.notes,
+            thread_id=sanctions_default_thread_id(task["wire_id"]),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to resume HITL task: {str(e)}",
+        )
+
+    # sanctions_resume_after_admin() already calls
+    # db.complete_human_review_task() internally once the graph
+    # confirms hitl_task_id - re-read the row so the response
+    # reflects the post-resume state, not the pre-resume one.
+    updated_task = _get_human_review_task(task_id)
+
+    return {
+        "task": updated_task,
+        "graph_result": result,
+    }
+
+
+@app.get("/admin/tickets")
+async def admin_list_tickets():
+    return _list_workflow_tickets()
+
+
+@app.get("/admin/tickets/{ticket_id}")
+async def admin_get_ticket(ticket_id: int):
+    """A single failure ticket plus the graph's persisted state at
+    the point it failed."""
+    ticket = _get_workflow_ticket(ticket_id)
+    if ticket is None:
+        raise HTTPException(status_code=404, detail="Unknown ticket.")
+
+    if ticket["workflow_type"] != SANCTIONS_WORKFLOW_TYPE:
+        return {
+            "ticket": ticket,
+            "graph_state": None,
+            "note": (
+                f"Live graph-state lookup isn't wired up for "
+                f"workflow_type={ticket['workflow_type']!r} yet - only "
+                f"{SANCTIONS_WORKFLOW_TYPE!r} is."
+            ),
+        }
+
+    thread_id = sanctions_default_thread_id(ticket["wire_id"])
+    snapshot = await sanctions_get_review_state(
+        wire_id=ticket["wire_id"],
+        thread_id=thread_id,
+    )
+
+    return {
+        "ticket": ticket,
+        "thread_id": thread_id,
+        "graph_state": _serialize_graph_snapshot(snapshot),
+    }
+
+
+class TicketResolveRequest(BaseModel):
+    notes: str = ""
+
+
+@app.post("/admin/tickets/{ticket_id}/resume")
+async def admin_resume_ticket(ticket_id: int, body: TicketResolveRequest):
+    """Mark a failure ticket resolved and resume the exact run that
+    failed, from its persisted checkpoint - same durable-graph
+    pattern as the HITL resume above."""
+    ticket = _get_workflow_ticket(ticket_id)
+    if ticket is None:
+        raise HTTPException(status_code=404, detail="Unknown ticket.")
+
+    if ticket["workflow_type"] != SANCTIONS_WORKFLOW_TYPE:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Resume isn't wired up for workflow_type="
+                f"{ticket['workflow_type']!r} yet."
+            ),
+        )
+
+    if ticket["status"] == "resolved":
+        raise HTTPException(
+            status_code=400, detail="This ticket is already resolved."
+        )
+
+    try:
+        result = await sanctions_resume_after_ticket(
+            wire_id=ticket["wire_id"],
+            notes=body.notes,
+            thread_id=sanctions_default_thread_id(ticket["wire_id"]),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to resume ticket: {str(e)}",
+        )
+
+    updated_ticket = _get_workflow_ticket(ticket_id)
+
+    return {
+        "ticket": updated_ticket,
+        "graph_result": result,
     }
 
 
