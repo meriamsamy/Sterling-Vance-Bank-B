@@ -706,3 +706,706 @@ I don’t have the transaction history on hand. Could you let me know the accoun
 ```
 
 **Result: PASSED — Memory, RAG, and context management are demonstrated end-to-end.**
+
+
+# State Graph Problems & Improvements
+
+## Overview
+
+The State Graph layer extends the existing Sterling & Vance Bank system with **persistent, recoverable, event-driven workflows**.
+
+The three problems below were selected because they are not single-pass LLM tasks. Each workflow can remain open, pause safely, receive an external event, resume from persisted state, and potentially require human intervention.
+
+The State Graph is responsible for the **lifecycle of the workflow**, while the existing MCP server remains responsible for banking operations and grounded data access.
+
+---
+
+# 1. Sanctions Change During an Open Wire Review
+
+## Problem
+
+A wire transfer can already be under manual review when an external sanctions update occurs.
+
+Example:
+
+```text
+Wire #42
+destination_country = Country X
+status = pending_manual_review
+```
+
+The review starts:
+
+```text
+PENDING REVIEW
+      ↓
+Collect Evidence
+      ↓
+Analyze
+      ↓
+WAITING FOR REVIEW
+```
+
+During the open review, the sanctions list changes:
+
+```text
+Country X
+CLEAR → SANCTIONED
+```
+
+This is a real stateful problem because the external change can affect a workflow that is **already in progress**.
+
+The system must determine:
+
+> Does the sanctions change affect the result of the still-open review?
+
+The graph therefore detects the update, identifies affected open reviews, and re-evaluates them.
+
+## State Graph
+
+```text
+                 OPEN REVIEW
+                      ↓
+                WAITING STATE
+                 ↙         ↘
+        New Evidence    Sanctions Update
+             ↓                ↓
+          Analyze         Re-check
+                 ↘          ↙
+                   ANALYZE
+                      ↓
+              ┌───────┼────────┐
+              ↓       ↓        ↓
+          No Impact  More    High Risk
+                     Evidence
+              ↓       ↓        ↓
+           Continue  WAIT     HITL
+```
+
+The workflow preserves state such as:
+
+```text
+review_id
+wire_id
+customer_id
+current_evidence
+analysis
+status
+last_checked_sanctions_version
+```
+
+## Why This Is Stateful
+
+The workflow cannot simply restart from the beginning.
+
+It must preserve the current review state and know which sanctions version was already checked.
+
+An external event can arrive while the workflow is waiting, causing the graph to resume and re-evaluate the affected review.
+
+The existing wire-transfer workflow does not need to be replaced. The MCP server continues to own the original banking operations, while the State Graph manages the lifecycle of the open review.
+
+## Agent Ownership
+
+**Compliance / Wire Review Agent**
+
+This agent owns the investigation and review lifecycle for flagged wire transfers.
+
+## LLM Components
+
+### RAG
+
+Bank policies are retrieved to ground the analysis in the Sterling & Vance financial-crime policy.
+
+### Constrained ReAct
+
+The agent uses constrained reasoning and available MCP tools to collect and validate evidence instead of inventing banking facts.
+
+## HITL
+
+Human review is triggered when the updated evidence results in a high-risk or otherwise sensitive decision.
+
+---
+
+# 2. Suspicious Activity Investigation — Waiting for Evidence
+
+## Problem
+
+A Fraud Investigator may start an investigation when the currently available evidence is not sufficient to reach a reliable conclusion.
+
+For example:
+
+```text
+Customer #12
+```
+
+has unusual transactions, but the available transaction history does not provide enough evidence to determine whether the activity is genuinely suspicious.
+
+Instead of forcing the LLM to make a decision, the workflow enters:
+
+```text
+INVESTIGATION
+      ↓
+Collect Evidence
+      ↓
+Analyze
+      ↓
+EVIDENCE INCOMPLETE
+      ↓
+WAITING_FOR_EVIDENCE
+```
+
+Later, an external system provides additional evidence.
+
+```text
+Evidence Arrives
+      ↓
+Resume Graph
+      ↓
+Add Evidence
+      ↓
+Re-analyze
+      ↓
+validate_investigation()
+      ↓
+Decision
+```
+
+If the evidence is still insufficient:
+
+```text
+WAITING_FOR_EVIDENCE
+```
+
+If the evidence supports a sensitive decision:
+
+```text
+HITL
+```
+
+## Why This Is Stateful
+
+The investigation cannot be completed in one execution.
+
+The graph must:
+
+1. Preserve the investigation state.
+2. Record the evidence already collected.
+3. Pause when evidence is insufficient.
+4. Wait for a real external event.
+5. Resume from the previous state.
+6. Re-run grounded validation after new evidence arrives.
+
+This is fundamentally different from asking the LLM to "think harder."
+
+The problem is that the **business process itself is incomplete** until new evidence arrives.
+
+## Existing Grounding
+
+The existing:
+
+```text
+validate_investigation(task, candidate)
+```
+
+remains the source of truth for grounded validation.
+
+The State Graph does not replace the validator.
+
+Instead:
+
+```text
+LLM Reasoning
+      ↓
+Candidate Decision
+      ↓
+validate_investigation()
+      ↓
+Grounded Result
+```
+
+The LLM performs reasoning, while the validator checks the result against the actual banking state.
+
+## Agent Ownership
+
+**Fraud Investigation Agent**
+
+This agent owns suspicious-activity investigations and determines whether the available evidence is sufficient for a grounded decision.
+
+## LLM Components
+
+### RAG
+
+The agent retrieves relevant financial-crime policies and investigation rules.
+
+### Constrained ReAct
+
+The agent uses constrained tool-driven reasoning to collect and validate evidence.
+
+## HITL
+
+Human intervention is required when the investigation reaches a sensitive decision that should not be finalized automatically.
+
+---
+
+# 3. Continuous Customer Risk Monitoring
+
+## Problem
+
+The existing system contains customer risk information such as:
+
+```text
+customers.risk_level
+```
+
+and historical transactions.
+
+However, storing historical information is not the same as having a workflow responsible for continuously monitoring whether the customer's current risk level is still consistent with new activity.
+
+Example:
+
+```text
+Customer #4
+risk_level = MEDIUM
+```
+
+The monitoring workflow starts:
+
+```text
+START MONITORING
+      ↓
+Collect Recent Activity
+      ↓
+Assess Risk
+      ↓
+Risk Changed?
+   ↙         ↘
+ No          Yes
+ ↓            ↓
+WAIT        Escalate
+ ↓
+New Activity
+ ↓
+Re-assess
+```
+
+The graph remains alive across multiple monitoring cycles.
+
+When a new transaction or relevant activity arrives, the workflow resumes and reassesses the customer's risk.
+
+## Why This Is Stateful
+
+This is not:
+
+> Analyze the customer once.
+
+It is:
+
+> Monitor the customer over time and react when the customer's state may have changed.
+
+The workflow therefore maintains state across multiple cycles.
+
+For example:
+
+```text
+customer_id
+current_risk_level
+last_assessed_activity
+risk_assessment
+monitoring_status
+last_checked_event
+```
+
+The workflow waits for new business activity and then resumes without losing the previous monitoring state.
+
+## Why This Is Different From Memory
+
+The existing memory layer allows the agent to retrieve historical activity and patterns.
+
+Memory answers:
+
+> What happened before?
+
+The State Graph answers:
+
+> What workflow am I currently responsible for, what state am I in, and what should happen when the next event arrives?
+
+Therefore:
+
+```text
+Memory / RAG
+      ↓
+Provides historical knowledge
+
+State Graph
+      ↓
+Manages the ongoing monitoring lifecycle
+```
+
+## Agent Ownership
+
+**Customer Risk Monitoring Agent**
+
+This agent owns the continuous monitoring lifecycle and determines whether new activity requires a risk reassessment.
+
+## LLM Components
+
+### RAG
+
+Risk assessment is grounded in the bank's financial-crime and risk policies.
+
+### Task Decomposition
+
+The agent dynamically decomposes the monitoring task based on the current activity instead of relying on a fixed sequence of steps.
+
+### LATS
+
+For significant activity, LATS provides deeper search and evaluation of possible risk interpretations before producing the assessment.
+
+The workflow can therefore move from:
+
+```text
+New Activity
+      ↓
+Task Decomposition
+      ↓
+LATS
+      ↓
+Risk Assessment
+```
+
+## HITL
+
+Human intervention is triggered when the customer's risk changes significantly or the resulting decision requires human oversight.
+
+---
+
+# How the Three Problems Demonstrate Stateful Workflows
+
+The three workflows cover different types of stateful behavior:
+
+| Problem                             | Why It Must Wait       | External Event                  | Resume Behavior             |
+| ----------------------------------- | ---------------------- | ------------------------------- | --------------------------- |
+| Sanctions Change During Open Review | Review is still open   | Sanctions update / new evidence | Re-evaluate affected review |
+| Suspicious Activity Investigation   | Evidence is incomplete | New evidence                    | Continue investigation      |
+| Continuous Risk Monitoring          | Monitoring is ongoing  | New customer activity           | Reassess risk               |
+
+These are intentionally different:
+
+* **Sanctions Review:** an external policy change affects an existing workflow.
+* **Suspicious Investigation:** the workflow cannot finish until missing evidence arrives.
+* **Continuous Monitoring:** the workflow is inherently long-running and repeatedly reacts to new events.
+
+---
+
+# How the Required State Graph Concerns Appear
+
+## 1. Persistent State
+
+Each workflow maintains business state instead of relying on the LLM's conversational context.
+
+Examples include:
+
+```text
+review_id
+wire_id
+customer_id
+evidence
+analysis
+risk_level
+status
+last_checked_event
+```
+
+This allows the workflow to resume without reconstructing its state from scratch.
+
+---
+
+## 2. Durable Checkpoints
+
+Graph execution is checkpointed so that an interrupted workflow can recover from the latest safe state.
+
+This is especially important for:
+
+* waiting states,
+* human-review states,
+* external events,
+* failures during investigation.
+
+The workflow should not lose its investigation state because the process was interrupted.
+
+---
+
+## 3. Real Waiting States
+
+The graphs contain meaningful waits rather than artificial delays.
+
+Examples:
+
+```text
+WAITING_FOR_REVIEW
+WAITING_FOR_EVIDENCE
+WAITING_FOR_NEW_ACTIVITY
+```
+
+The graph pauses because the required business event has not happened yet.
+
+---
+
+## 4. External Events
+
+The workflows react to changes that originate outside the current LLM execution.
+
+Examples:
+
+```text
+Sanctions Update
+New Evidence
+New Transaction
+```
+
+These events can cause a previously waiting workflow to resume and follow a different path.
+
+---
+
+## 5. Human-in-the-Loop
+
+HITL is used when the workflow reaches a decision that should not be finalized automatically.
+
+General flow:
+
+```text
+Risk / Investigation
+        ↓
+Stable & Sufficient
+        ↓
+       WAIT
+
+Changed / High Risk / Low Confidence
+        ↓
+       HITL
+        ↓
+Admin Decision
+        ↓
+       WAIT / Continue
+```
+
+Human intervention is therefore represented as part of the workflow state rather than as an external side effect disconnected from the graph.
+
+---
+
+## 6. Recovery
+
+If a node fails, the workflow preserves the previous checkpoint and can recover without losing the investigation state.
+
+The recovery model is:
+
+```text
+Checkpoint
+    ↓
+Node Execution
+    ↓
+Failure
+    ↓
+Recover / Retry
+    ↓
+Resume From Safe State
+```
+
+This is particularly important for investigations that may remain open for a long period.
+
+---
+
+## 7. Grounded Decisions
+
+The State Graph does not make the LLM the source of truth.
+
+The architecture separates:
+
+```text
+State Graph
+    ↓
+Workflow lifecycle
+
+LLM Agents
+    ↓
+Reasoning / planning
+
+MCP Server
+    ↓
+Banking operations and tools
+
+Database
+    ↓
+Source of banking state
+
+Validators
+    ↓
+Grounded verification
+
+HITL
+    ↓
+Human authority for sensitive decisions
+```
+
+This separation prevents the LLM from directly inventing or overriding banking facts.
+
+---
+
+# What Was Fixed From Previous Grading
+
+The State Graph implementation also addresses issues identified in the previous grading.
+
+## 1. From Single-Pass Agents → Stateful Workflows
+
+Previously, the agent could complete a task in one execution.
+
+The new implementation introduces workflows that can:
+
+```text
+START
+ ↓
+WORK
+ ↓
+WAIT
+ ↓
+EXTERNAL EVENT
+ ↓
+RESUME
+ ↓
+REASSESS
+ ↓
+DECISION
+```
+
+The workflow therefore has a lifecycle beyond a single LLM call.
+
+---
+
+## 2. From Fixed Planning → Dynamic Task Decomposition
+
+The previous planning approach relied on a fixed decomposition.
+
+The new approach uses dynamic decomposition so the next task can depend on the current state and observations.
+
+This is especially useful for investigations where the available evidence changes over time.
+
+---
+
+## 3. Stronger Grounding
+
+The previous implementation already introduced grounded validation through:
+
+```text
+validate_investigation()
+```
+
+The State Graph keeps this validation in the decision path instead of allowing the LLM to become the final source of truth.
+
+---
+
+## 4. RAG Is Used for Policy Grounding
+
+Relevant bank policies are retrieved during reasoning rather than relying only on the model's internal knowledge.
+
+This grounds decisions such as:
+
+* sanctions handling,
+* suspicious activity assessment,
+* risk escalation,
+* human-review requirements.
+
+---
+
+## 5. HITL Is Now Part of the Workflow
+
+Human oversight is represented as an explicit graph state/transition.
+
+Instead of:
+
+```text
+Agent → final answer
+```
+
+the workflow can do:
+
+```text
+Agent
+ ↓
+Risk Assessment
+ ↓
+HITL
+ ↓
+Human Decision
+ ↓
+Resume Workflow
+```
+
+This makes human oversight recoverable and state-aware.
+
+---
+
+## 6. Recovery Is Explicit
+
+The workflow state is checkpointed so interruptions do not require restarting the entire investigation.
+
+This addresses the requirement for **persistent and recoverable state**.
+
+---
+
+## 7. Clear Separation of Responsibilities
+
+The architecture was clarified so that each layer has a specific responsibility:
+
+| Layer       | Responsibility                                        |
+| ----------- | ----------------------------------------------------- |
+| State Graph | Workflow lifecycle, state, waiting, routing, recovery |
+| Agent       | Reasoning and decision support                        |
+| MCP Server  | Controlled access to banking tools                    |
+| Database    | Persistent banking data                               |
+| RAG         | Policy and knowledge grounding                        |
+| Validators  | Ground-truth verification                             |
+| HITL        | Human authority for sensitive decisions               |
+
+This prevents the State Graph from duplicating responsibilities that already belong to the MCP server or database.
+
+---
+
+# Final Takeaway
+
+The three State Graph problems demonstrate three different reasons why a banking workflow needs persistent, recoverable state:
+
+```text
+1. Sanctions Change
+   → An external policy event changes an OPEN workflow.
+
+2. Suspicious Investigation
+   → The workflow must WAIT for missing evidence.
+
+3. Continuous Risk Monitoring
+   → The workflow remains active and reacts to NEW ACTIVITY.
+```
+
+Together, they demonstrate:
+
+```text
+Persistent State
+      +
+Durable Checkpoints
+      +
+Real Waiting
+      +
+External Events
+      +
+Recovery
+      +
+LLM Reasoning
+      +
+Grounded Validation
+      +
+Human Oversight
+```
+
+The key design principle is:
+
+> **The LLM reasons inside the workflow; the State Graph owns the workflow lifecycle.**
+
