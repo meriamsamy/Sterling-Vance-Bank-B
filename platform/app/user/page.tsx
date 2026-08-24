@@ -1,206 +1,209 @@
 'use client';
 
-import * as React from 'react';
-import { Sidebar } from '@/components/sidebar';
-import { AgentHeader } from '@/components/agent-header';
-import { EmptyState } from '@/components/empty-state';
-import { ChatInput, ScrollToBottomButton } from '@/components/chat-input';
-import {
-  MessageBubble,
-  TypingIndicator,
-  type ChatMessage,
-} from '@/components/message-bubble';
-import { AGENTS, type AgentId } from '@/lib/agents';
-import { cn } from '@/lib/utils';
+import React, { useState, useEffect, useRef } from 'react';
 
-function generateThreadId(): string {
-  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
-    return crypto.randomUUID();
-  }
-  return `thread_${Date.now().toString(36)}_${Math.random()
-    .toString(36)
-    .slice(2, 10)}`;
+type AgentId = 'customer-risk-monitoring' | 'planning-decomposition' | 'memory-rag' | 'sanctions-change';
+
+interface Message {
+  sender: 'user' | 'agent';
+  text: string;
 }
 
-export default function Home() {
-  const [activeAgentId, setActiveAgentId] = React.useState<AgentId>(
-    'customer-risk-monitoring'
-  );
-  const [threadId, setThreadId] = React.useState<string | null>(null);
-  const [threadCreatedAt, setThreadCreatedAt] = React.useState<number | null>(
-    null
-  );
-  const [messages, setMessages] = React.useState<ChatMessage[]>([]);
-  const [isSending, setIsSending] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
+const AGENTS: { id: AgentId; name: string; description: string }[] = [
+  {
+    id: 'customer-risk-monitoring',
+    name: 'Customer Risk Monitoring',
+    description: 'Analyzes customer accounts and transactions for risk monitoring.',
+  },
+  {
+    id: 'planning-decomposition',
+    name: 'Planning & Decomposition',
+    description: 'Decomposes complex tasks and builds execution workflows (DAGs).',
+  },
+  {
+    id: 'memory-rag',
+    name: 'Memory & RAG',
+    description: 'Retrieves context and information from databases and memory.',
+  },
+  {
+    id: 'sanctions-change',
+    name: 'Sanctions Change Monitoring',
+    description: 'Monitors sanctions changes and re-evaluates affected wire reviews.',
+  },
+];
 
-  const scrollRef = React.useRef<HTMLDivElement>(null);
-  const [showScrollBtn, setShowScrollBtn] = React.useState(false);
+export default function UnifiedAgentChatPlatform() {
+  const [selectedAgent, setSelectedAgent] = useState<AgentId>('customer-risk-monitoring');
+  const [sessions, setSessions] = useState<Record<AgentId, { threadId: string; messages: Message[] }>>({
+  'customer-risk-monitoring': {
+    threadId: crypto.randomUUID(),
+    messages: [
+      {
+        sender: 'agent',
+        text: 'Hello. I am the Customer Risk Monitoring agent. How can I assist you today?',
+      },
+    ],
+  },
 
-  const activeAgent = AGENTS[activeAgentId];
+  'planning-decomposition': {
+    threadId: crypto.randomUUID(),
+    messages: [
+      {
+        sender: 'agent',
+        text: 'Ready to decompose tasks and build execution plans.',
+      },
+    ],
+  },
 
-  const scrollToBottom = React.useCallback((smooth = false) => {
-    const el = scrollRef.current;
-    if (!el) return;
-    el.scrollTo({
-      top: el.scrollHeight,
-      behavior: smooth ? 'smooth' : 'auto',
-    });
-  }, []);
+  'memory-rag': {
+    threadId: crypto.randomUUID(),
+    messages: [
+      {
+        sender: 'agent',
+        text: 'I can retrieve data and search memory to help you.',
+      },
+    ],
+  },
 
-  React.useEffect(() => {
-    scrollToBottom(true);
-  }, [messages, isSending, scrollToBottom]);
+  'sanctions-change': {
+    threadId: crypto.randomUUID(),
+    messages: [
+      {
+        sender: 'agent',
+        text: 'Sanctions Change Monitoring is ready. I can review sanctions-related changes and affected wire transfers.',
+      },
+    ],
+  },
+});
 
-  const handleScroll = () => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
-    setShowScrollBtn(distance > 120);
-  };
+  const [input, setInput] = useState('');
+  const [loading, setLoading] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  const resetThread = () => {
-    setThreadId(null);
-    setThreadCreatedAt(null);
-    setMessages([]);
-    setError(null);
-  };
+  const currentSession = sessions[selectedAgent];
 
-  const handleAgentChange = (id: AgentId) => {
-    if (id === activeAgentId) return;
-    setActiveAgentId(id);
-    resetThread();
-  };
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [currentSession.messages, loading]);
 
-  const handleNewThread = () => {
-    resetThread();
-  };
+  const handleSendMessage = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!input.trim() || loading) return;
 
-  const sendMessage = async (text: string) => {
-    setError(null);
+    const userMsg = input.trim();
+    setInput('');
 
-    const currentThreadId = threadId ?? generateThreadId();
-    if (!threadId) {
-      setThreadId(currentThreadId);
-      setThreadCreatedAt(Date.now());
-    }
+    // Update messages locally for the user
+    setSessions((prev) => ({
+      ...prev,
+      [selectedAgent]: {
+        ...prev[selectedAgent],
+        messages: [...prev[selectedAgent].messages, { sender: 'user', text: userMsg }],
+      },
+    }));
 
-    const userMsg: ChatMessage = {
-      id: `${Date.now()}_u`,
-      role: 'user',
-      content: text,
-      createdAt: Date.now(),
-    };
-    setMessages((prev) => [...prev, userMsg]);
-    setIsSending(true);
+    setLoading(true);
 
     try {
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          agent_name: activeAgentId,
-          message: text,
-          thread_id: currentThreadId,
+          agent_name: selectedAgent,
+          message: userMsg,
+          thread_id: currentSession.threadId,
         }),
       });
 
       const data = await res.json();
 
       if (!res.ok) {
-        const detail =
-          data.fallback ??
-          data.detail ??
-          data.error ??
-          'The agent could not process your request.';
-        throw new Error(detail);
+        throw new Error(data.error || 'An error occurred while connecting to the agent');
       }
 
-      const aiMsg: ChatMessage = {
-        id: `${Date.now()}_a`,
-        role: 'assistant',
-        content: data.response,
-        createdAt: Date.now(),
-      };
-      setMessages((prev) => [...prev, aiMsg]);
-
-      if (data.thread_id) {
-        setThreadId(data.thread_id);
-      }
-    } catch (err) {
-      const detail =
-        err instanceof Error ? err.message : 'Unexpected error occurred.';
-      setError(detail);
-      setMessages((prev) => [
+      // Add the real agent response
+      setSessions((prev) => ({
         ...prev,
-        {
-          id: `${Date.now()}_e`,
-          role: 'assistant',
-          content: `Unable to reach the agent. ${detail}`,
-          createdAt: Date.now(),
+        [selectedAgent]: {
+          ...prev[selectedAgent],
+          messages: [...prev[selectedAgent].messages, { sender: 'agent', text: data.response }],
         },
-      ]);
+      }));
+    } catch (err: any) {
+      setSessions((prev) => ({
+        ...prev,
+        [selectedAgent]: {
+          ...prev[selectedAgent],
+          messages: [...prev[selectedAgent].messages, { sender: 'agent', text: `Error: ${err.message}` }],
+        },
+      }));
     } finally {
-      setIsSending(false);
+      setLoading(false);
     }
   };
 
   return (
-    <div className="flex h-screen w-full overflow-hidden bg-background">
-      <Sidebar
-        activeAgentId={activeAgentId}
-        onAgentChange={handleAgentChange}
-        threadId={threadId}
-        threadCreatedAt={threadCreatedAt}
-        messageCount={messages.length}
-        onNewThread={handleNewThread}
-      />
+    <div className="flex h-screen bg-gray-900 text-white">
+      {/* Sidebar for switching agents */}
+      <div className="w-80 border-r border-gray-800 p-4 flex flex-col gap-2">
+        <h2 className="text-lg font-bold mb-4 text-blue-400">Sterling & Vance Platform</h2>
+        <p className="text-xs text-gray-400 mb-2">Select an agent to start (isolated sessions):</p>
+        {AGENTS.map((agent) => (
+          <button
+            key={agent.id}
+            onClick={() => setSelectedAgent(agent.id)}
+            className={`p-3 rounded-lg text-left transition-all ${
+              selectedAgent === agent.id ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+            }`}
+          >
+            <div className="font-semibold text-sm">{agent.name}</div>
+            <div className="text-xs opacity-75 truncate mt-1">{agent.description}</div>
+          </button>
+        ))}
+      </div>
 
-      <main className="flex h-full flex-1 flex-col">
-        <AgentHeader
-          agent={activeAgent}
-          threadId={threadId}
-          online={!isSending || true}
-        />
+      {/* Main chat area */}
+      <div className="flex-1 flex flex-col h-full">
+        <header className="p-4 border-b border-gray-800 bg-gray-900 flex justify-between items-center">
+          <div>
+            <h3 className="font-bold capitalize">{selectedAgent.replace(/-/g, ' ')}</h3>
+            <span className="text-xs text-green-400">● Connected & Ready (Session Isolated)</span>
+          </div>
+        </header>
 
-        <div
-          ref={scrollRef}
-          onScroll={handleScroll}
-          className={cn(
-            'relative flex-1 overflow-y-auto scrollbar-thin',
-            messages.length === 0 && 'flex items-center'
-          )}
-        >
-          {messages.length === 0 ? (
-            <EmptyState
-              agent={activeAgent}
-              onSuggestionClick={sendMessage}
-            />
-          ) : (
-            <div className="mx-auto max-w-3xl py-4">
-              {messages.map((m) => (
-                <MessageBubble key={m.id} message={m} />
-              ))}
-              {isSending && <TypingIndicator />}
+        <div className="flex-1 overflow-y-auto p-6 space-y-4 bg-gray-950">
+          {currentSession.messages.map((msg, idx) => (
+            <div key={idx} className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
+              <div
+                className={`max-w-lg p-3 rounded-xl text-sm ${
+                  msg.sender === 'user' ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-200'
+                }`}
+              >
+                {msg.text}
+              </div>
             </div>
-          )}
+          ))}
+          {loading && <div className="text-gray-500 text-sm animate-pulse">Agent is typing...</div>}
+          <div ref={messagesEndRef} />
         </div>
 
-        <ScrollToBottomButton
-          visible={showScrollBtn && messages.length > 0}
-          onClick={() => scrollToBottom(true)}
-        />
-
-        {error && (
-          <div className="mx-auto max-w-3xl px-4">
-            <p className="mb-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-              {error}
-            </p>
-          </div>
-        )}
-
-        <ChatInput onSend={sendMessage} disabled={isSending} />
-      </main>
+        <form onSubmit={handleSendMessage} className="p-4 border-t border-gray-800 bg-gray-900 flex gap-2">
+          <input
+            type="text"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder={`Chat with ${selectedAgent}...`}
+            className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-blue-500"
+          />
+          <button
+            type="submit"
+            disabled={loading}
+            className="bg-blue-600 px-6 py-3 rounded-lg font-medium hover:bg-blue-500 disabled:opacity-50 transition-colors"
+          >
+            Send
+          </button>
+        </form>
+      </div>
     </div>
   );
 }
