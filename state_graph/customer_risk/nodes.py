@@ -8,7 +8,7 @@ from config import API_KEY
 from langchain_groq import ChatGroq
 from langgraph.types import interrupt
 
-from mcp import db_access as db
+from mcp_server import db_access as db
 from planning.decomposition import BankDecompositionAdapter
 from rag.hybrid_rag import hybrid_rag
 

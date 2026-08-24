@@ -3,7 +3,7 @@ import functools
 import sqlite3
 import traceback
 from typing import Callable, Any
-from mcp import db_access as db
+from mcp_server import db_access as db
 
 def handle_node_failure(func: Callable[..., dict[str, Any]]):
     @functools.wraps(func)
