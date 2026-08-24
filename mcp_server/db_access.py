@@ -28,8 +28,8 @@ STRUCTURING_COUNT = 3
 def get_conn():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
     return conn
-
 
 def get_employee(employee_id: int):
     conn = get_conn()
@@ -812,6 +812,371 @@ def get_customer_recent_transactions(
 
     return [dict(row) for row in rows]
 
+# ============================================================
+# UI / Backend - Agent Management
+# ============================================================
+
+def get_agents() -> list[dict]:
+    """
+    Return all registered agents.
+    Used by the UI/backend to display available agents.
+    """
+    conn = get_conn()
+
+    rows = conn.execute(
+        """
+        SELECT
+            agent_id,
+            name,
+            description,
+            created_at
+        FROM agents
+        ORDER BY name
+        """
+    ).fetchall()
+
+    conn.close()
+
+    return [dict(row) for row in rows]
+
+
+def get_agent(agent_id: str):
+    """
+    Return one agent by ID.
+    """
+    conn = get_conn()
+
+    row = conn.execute(
+        """
+        SELECT
+            agent_id,
+            name,
+            description,
+            created_at
+        FROM agents
+        WHERE agent_id = ?
+        """,
+        (agent_id,),
+    ).fetchone()
+
+    conn.close()
+
+    return dict(row) if row else None
+
+
+def create_agent(
+    agent_id: str,
+    name: str,
+    description: str | None,
+    created_at: str,
+):
+    """
+    Register a new agent.
+    """
+    conn = get_conn()
+
+    conn.execute(
+        """
+        INSERT INTO agents
+        (
+            agent_id,
+            name,
+            description,
+            created_at
+        )
+        VALUES (?, ?, ?, ?)
+        """,
+        (
+            agent_id,
+            name,
+            description,
+            created_at,
+        ),
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def delete_agent(agent_id: str):
+    """
+    Delete an agent.
+
+    Because agent_tools.agent_id references agents.agent_id
+    with ON DELETE CASCADE, all tools assigned to this agent
+    are deleted automatically.
+    """
+    conn = get_conn()
+
+    conn.execute(
+        """
+        DELETE FROM agents
+        WHERE agent_id = ?
+        """,
+        (agent_id,),
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def get_agent_tools(agent_id: str) -> list[str]:
+    """
+    Return the names of all tools currently assigned to an agent.
+    """
+    conn = get_conn()
+
+    rows = conn.execute(
+        """
+        SELECT tool_name
+        FROM agent_tools
+        WHERE agent_id = ?
+        ORDER BY tool_name
+        """,
+        (agent_id,),
+    ).fetchall()
+
+    conn.close()
+
+    return [row["tool_name"] for row in rows]
+
+
+def add_agent_tool(agent_id: str, tool_name: str):
+    conn = get_conn()
+
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO agent_tools
+        (
+            agent_id,
+            tool_name
+        )
+        SELECT ?, ?
+        WHERE EXISTS (
+            SELECT 1
+            FROM tools
+            WHERE tool_name = ?
+        )
+        """,
+        (
+            agent_id,
+            tool_name,
+            tool_name,
+        ),
+    )
+
+    conn.commit()
+    conn.close()
+
+def remove_agent_tool(
+    agent_id: str,
+    tool_name: str,
+):
+    """
+    Remove a tool from an agent.
+    """
+    conn = get_conn()
+
+    conn.execute(
+        """
+        DELETE FROM agent_tools
+        WHERE agent_id = ?
+          AND tool_name = ?
+        """,
+        (
+            agent_id,
+            tool_name,
+        ),
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def get_all_tools() -> list[dict]:
+    """
+    Return all registered MCP tools.
+    """
+    conn = get_conn()
+
+    rows = conn.execute(
+        """
+        SELECT tool_name, description, category, status
+        FROM tools
+        ORDER BY tool_name
+        """
+    ).fetchall()
+
+    conn.close()
+
+    return [dict(row) for row in rows]
+
+
+def get_tool(tool_name: str) -> dict | None:
+    """
+    Return one tool by name.
+    """
+    conn = get_conn()
+
+    row = conn.execute(
+        """
+        SELECT tool_name, description, category, status
+        FROM tools
+        WHERE tool_name = ?
+        """,
+        (tool_name,),
+    ).fetchone()
+
+    conn.close()
+
+    return dict(row) if row else None
+
+
+def is_tool_assigned(agent_id: str, tool_name: str) -> bool:
+    """
+    Check whether a tool is currently assigned to an agent.
+    The MCP server calls this before allowing a tool call.
+    """
+    conn = get_conn()
+
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM agent_tools
+        WHERE agent_id = ?
+          AND tool_name = ?
+        """,
+        (agent_id, tool_name),
+    ).fetchone()
+
+    conn.close()
+
+    return row is not None
+
+
+def get_tool_assignments(tool_name: str) -> list[dict]:
+    """
+    Return all agents assigned to a given tool.
+    """
+    conn = get_conn()
+
+    rows = conn.execute(
+        """
+        SELECT a.agent_id, a.name
+        FROM agent_tools at
+        JOIN agents a ON a.agent_id = at.agent_id
+        WHERE at.tool_name = ?
+        ORDER BY a.name
+        """,
+        (tool_name,),
+    ).fetchall()
+
+    conn.close()
+
+    return [dict(row) for row in rows]
+
+def get_agents_with_tools() -> list[dict]:
+    conn = get_conn()
+
+    rows = conn.execute(
+        """
+        SELECT
+            a.agent_id,
+            a.name,
+            a.description,
+            a.created_at,
+            COUNT(at.tool_name) as tool_count
+        FROM agents a
+        LEFT JOIN agent_tools at
+        ON a.agent_id = at.agent_id
+        GROUP BY a.agent_id
+        ORDER BY a.name
+        """
+    ).fetchall()
+
+    conn.close()
+
+    return [dict(row) for row in rows]
+
+def get_available_tools_for_agent(agent_id: str):
+
+    conn = get_conn()
+
+    rows = conn.execute(
+        """
+        SELECT
+            t.tool_name,
+            t.description,
+            t.category,
+            CASE
+                WHEN at.agent_id IS NOT NULL
+                THEN 1
+                ELSE 0
+            END AS assigned
+        FROM tools t
+        LEFT JOIN agent_tools at
+        ON t.tool_name = at.tool_name
+        AND at.agent_id = ?
+
+        ORDER BY t.tool_name
+        """,
+        (agent_id,)
+    ).fetchall()
+
+    conn.close()
+
+    return [dict(row) for row in rows]
+
+def get_active_tools():
+    conn = get_conn()
+    rows = conn.execute(
+        """
+        SELECT
+            tool_name,
+            description,
+            category,
+            status
+        FROM tools
+        WHERE status = 'active'
+        ORDER BY tool_name
+        """
+    ).fetchall()
+    conn.close()
+
+    return [
+        dict(row)
+        for row in rows
+    ]
+
+
+def get_active_tools_for_agent(agent_id: str):
+    """
+    Return active MCP tools assigned to a specific agent.
+    Used by MCP server runtime to build agent-specific tool registry.
+    """
+    conn = get_conn()
+    rows = conn.execute(
+        """
+        SELECT
+            t.tool_name,
+            t.description,
+            t.category,
+            t.status
+        FROM tools t
+        JOIN agent_tools at
+            ON t.tool_name = at.tool_name
+        WHERE at.agent_id = ?
+          AND t.status = 'active'
+        ORDER BY t.tool_name
+        """,
+        (agent_id,)
+    ).fetchall()
+    conn.close()
+
+    return [
+        dict(row)
+        for row in rows
+    ]
 # Suspicious Activity Investigation additions
 
 def get_customer(customer_id: int):
