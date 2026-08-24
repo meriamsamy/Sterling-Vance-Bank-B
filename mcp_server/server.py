@@ -42,6 +42,11 @@ from .schemas import (
     CHECK_SANCTIONS_SCHEMA,
     VALIDATE_INVESTIGATION_OUTPUT_SCHEMA,
     TOOL_VALIDATORS,
+    GET_RELATED_EMPLOYEES_SCHEMA,
+    GET_CUSTOMER_WIRE_HISTORY_SCHEMA,
+    CREATE_INVESTIGATION_SCHEMA,
+    GET_INVESTIGATION_SCHEMA,
+    SUBMIT_INVESTIGATION_EVIDENCE_SCHEMA,
 )
 
 from pydantic import ValidationError, BaseModel
@@ -136,6 +141,7 @@ def extract_wire_id(message: str) -> int:
 # away" possible; splitting them into two separate apps (as the
 # previous draft did with a standalone run_http()) would make that
 # impossible without extra IPC.
+
 
 server = Server("sterling-vance-wire-server")
 
@@ -371,44 +377,137 @@ def _agent_tool_allowed(ctx, tool_name: str) -> bool:
 
 
 # ============================================================
+# INVESTIGATION TOOLS
+# ============================================================
+
+INVESTIGATION_TOOLS = [
+    types.Tool(
+        name="get_related_employees",
+        description="List employees related to a customer (self-dealing/conflict-of-interest evidence, read-only).",
+        inputSchema=GET_RELATED_EMPLOYEES_SCHEMA,
+    ),
+    types.Tool(
+        name="get_customer_wire_history",
+        description="Full wire transfer history (amount, status, destination, timestamp) across all of a customer's accounts, read-only.",
+        inputSchema=GET_CUSTOMER_WIRE_HISTORY_SCHEMA,
+    ),
+    types.Tool(
+        name="create_investigation",
+        description="Open a new suspicious activity investigation for a customer and start the investigation state graph.",
+        inputSchema=CREATE_INVESTIGATION_SCHEMA,
+    ),
+    types.Tool(
+        name="get_investigation",
+        description="Look up a suspicious activity investigation's current status (read-only).",
+        inputSchema=GET_INVESTIGATION_SCHEMA,
+    ),
+    types.Tool(
+        name="submit_investigation_evidence",
+        description="Submit new evidence for an investigation that is waiting on it — resumes the paused investigation graph.",
+        inputSchema=SUBMIT_INVESTIGATION_EVIDENCE_SCHEMA,
+    ),
+]
+
+
+# ============================================================
+# ALL TOOLS REGISTRY
+# ============================================================
+
+ALL_TOOLS_BY_NAME: dict[str, types.Tool] = {
+    t.name: t
+    for t in (
+        BASE_TOOLS
+        + COMPLIANCE_TOOLS
+        + VALIDATION_TOOLS
+        + INVESTIGATION_TOOLS
+    )
+}
+
+
+# Tools that must always work regardless of agent assignment.
+AGENT_EXEMPT_TOOLS = {"register_agent"}
+
+
+def _current_agent_id(ctx) -> str | None:
+    return _session_state(ctx).get("agent_id")
+
+
+def _agent_tool_allowed(ctx, tool_name: str) -> bool:
+    """
+    Backend enforcement check.
+
+    - No agent identified on this connection -> legacy behavior,
+      nothing extra is blocked.
+    - Agent identified -> the tool must be present in that
+      agent's live agent_tools assignment, checked fresh against
+      the database on every single call.
+    """
+    if tool_name in AGENT_EXEMPT_TOOLS:
+        return True
+
+    agent_id = _current_agent_id(ctx)
+
+    if agent_id is None:
+        return True
+
+    return db.is_tool_assigned(agent_id, tool_name)
+
+
+# ============================================================
 # LIST TOOLS
 # ============================================================
 
 @server.list_tools()
 async def list_tools():
-
     ctx = server.request_context
     state = _session_state(ctx)
     emp_id = state["employee_id"]
 
+    # --------------------------------------------------------
+    # Determine tools allowed by employee role
+    # --------------------------------------------------------
+
     if emp_id is None:
         role_allowed = BASE_TOOLS
+
     else:
         employee = db.get_employee(emp_id)
 
         if employee is None:
             role_allowed = BASE_TOOLS
+
         elif employee["role"] in (
             "compliance_officer",
             "fraud_investigator",
         ):
             role_allowed = (
-                BASE_TOOLS + COMPLIANCE_TOOLS + VALIDATION_TOOLS
+                BASE_TOOLS
+                + COMPLIANCE_TOOLS
+                + VALIDATION_TOOLS
+                + INVESTIGATION_TOOLS
             )
+
         else:
             role_allowed = BASE_TOOLS
 
+    # --------------------------------------------------------
+    # Agent-specific tool assignment
+    # --------------------------------------------------------
+
     agent_id = _current_agent_id(ctx)
 
+    # No agent connected -> preserve legacy role-based behavior
     if agent_id is None:
         return role_allowed
 
+    # Agent connected -> only return tools assigned to that agent
     assigned = set(db.get_agent_tools(agent_id))
 
     return [
         tool
         for tool in role_allowed
-        if tool.name in AGENT_EXEMPT_TOOLS or tool.name in assigned
+        if tool.name in AGENT_EXEMPT_TOOLS
+        or tool.name in assigned
     ]
 
 
@@ -419,12 +518,17 @@ async def list_tools():
 @server.call_tool()
 async def call_tool(name: str, args: dict):
 
+    # --------------------------------------------------------
+    # Validate tool arguments
+    # --------------------------------------------------------
+
     validator = TOOL_VALIDATORS.get(name)
 
     if validator is not None:
         try:
             validated_args = validator.model_validate(args)
             args = validated_args.model_dump()
+
         except ValidationError:
             return [
                 types.TextContent(
@@ -432,6 +536,10 @@ async def call_tool(name: str, args: dict):
                     text="Invalid tool arguments.",
                 )
             ]
+
+    # --------------------------------------------------------
+    # Agent assignment enforcement
+    # --------------------------------------------------------
 
     ctx = server.request_context
 
@@ -447,6 +555,10 @@ async def call_tool(name: str, args: dict):
             )
         ]
 
+    # --------------------------------------------------------
+    # BASE TOOLS
+    # --------------------------------------------------------
+
     if name == "register_agent":
         return await register_agent(args, ctx)
 
@@ -458,6 +570,10 @@ async def call_tool(name: str, args: dict):
 
     if name == "wire_transfer_initiate":
         return await wire_transfer(args, ctx)
+
+    # --------------------------------------------------------
+    # COMPLIANCE TOOLS
+    # --------------------------------------------------------
 
     if name == "batch_sanctions_scan":
         return await batch_scan(args, ctx)
@@ -471,11 +587,34 @@ async def call_tool(name: str, args: dict):
     if name == "check_sanctions":
         return check_sanctions(args)
 
+    # --------------------------------------------------------
+    # VALIDATION TOOL
+    # --------------------------------------------------------
+
     if name == "validate_investigation":
         return await validate_investigation(
             task=args["task"],
             candidate=args["candidate"],
         )
+
+    # --------------------------------------------------------
+    # SUSPICIOUS ACTIVITY INVESTIGATION TOOLS
+    # --------------------------------------------------------
+
+    if name == "get_related_employees":
+        return get_related_employees(args)
+
+    if name == "get_customer_wire_history":
+        return get_customer_wire_history(args)
+
+    if name == "create_investigation":
+        return await create_investigation_tool(args)
+
+    if name == "get_investigation":
+        return get_investigation_tool(args)
+
+    if name == "submit_investigation_evidence":
+        return await submit_investigation_evidence_tool(args)
 
     raise ValueError(f"unknown tool: {name}")
 
@@ -728,6 +867,155 @@ def check_sanctions(args):
         types.TextContent(
             type="text",
             text=f"{country}: {'SANCTIONED' if hit else 'clear'}",
+        )
+    ]
+
+# Suspicious Activity Investigation additions
+
+def get_related_employees(args):
+    employees = db.get_related_employees(args["customer_id"])
+
+    if not employees:
+        return [
+            types.TextContent(
+                type="text",
+                text=f"No employees related to customer {args['customer_id']}.",
+            )
+        ]
+
+    lines = [
+        f"- employee {e['employee_id']} ({e['name']}, {e['role']})"
+        for e in employees
+    ]
+
+    return [
+        types.TextContent(
+            type="text",
+            text=(
+                f"Employees related to customer {args['customer_id']}:\n"
+                + "\n".join(lines)
+            ),
+        )
+    ]
+
+
+def get_customer_wire_history(args):
+    accounts = db.get_customer_accounts(args["customer_id"])
+    account_ids = [a["account_id"] for a in accounts]
+    wires = db.get_customer_wire_transfers(account_ids)
+
+    if not wires:
+        return [
+            types.TextContent(
+                type="text",
+                text=f"No wire transfers found for customer {args['customer_id']}.",
+            )
+        ]
+
+    lines = [
+        f"- transfer #{w['transfer_id']}: ${w['amount']:.2f} -> "
+        f"{w['destination_country']} status={w['status']} "
+        f"flags={w['flag_reason'] or 'none'}"
+        for w in wires
+    ]
+
+    return [
+        types.TextContent(
+            type="text",
+            text=(
+                f"Wire transfers for customer {args['customer_id']}:\n"
+                + "\n".join(lines)
+            ),
+        )
+    ]
+
+
+def get_investigation_tool(args):
+    row = db.get_investigation(args["investigation_id"])
+
+    if row is None:
+        return [
+            types.TextContent(
+                type="text",
+                text=f"No investigation #{args['investigation_id']}.",
+            )
+        ]
+
+    return [
+        types.TextContent(
+            type="text",
+            text=(
+                f"Investigation #{row['investigation_id']} "
+                f"(customer {row['customer_id']}): status={row['status']}, "
+                f"risk_level={row['risk_level']}, "
+                f"decision={row['decision'] or 'pending'}."
+            ),
+        )
+    ]
+
+
+# create_investigation and submit_investigation_evidence are the two
+# tools that actually drive the state graph, not just touch the DB —
+# calling db.create_investigation() directly here (bypassing the graph
+# runner) would create an orphaned investigations row with no
+# thread_id, one the graph never actually manages. So these import
+# investigation_graph_runner and call INTO it.
+#
+# That import is deliberately done HERE, inside the function body, not
+# at the top of server.py: investigation_graph_runner.py ->
+# investigation_graph.py -> investigation_lats.py, which itself lazily
+# imports `from server import validate_investigation` inside its own
+# function body for the exact same reason (see investigation_lats.py's
+# comment above reassess_investigation()). Both sides import lazily so
+# neither module has to fully exist yet at the other's import time —
+# only at actual call time, by which point both are already loaded.
+
+async def create_investigation_tool(args):
+    from state_graph.suspicious_activity.investigation_graph_runner import (
+        start_investigation,
+    )
+
+    result = await start_investigation(
+        customer_id=args["customer_id"],
+        reason=args["reason"],
+    )
+
+    return [
+        types.TextContent(
+            type="text",
+            text=(
+                f"Investigation #{result.get('investigation_id')} opened "
+                f"for customer {args['customer_id']}. Status: {result.get('status')}."
+                + (
+                    f" Paused: {result['interrupt'].get('reason')}."
+                    if result.get("status") == "paused"
+                    else ""
+                )
+            ),
+        )
+    ]
+
+
+async def submit_investigation_evidence_tool(args):
+    from state_graph.suspicious_activity.investigation_graph_runner import (
+        submit_external_evidence,
+    )
+
+    result = await submit_external_evidence(
+        investigation_id=args["investigation_id"],
+        evidence={args["evidence_type"]: {
+            "evidence_data": args["evidence_data"],
+            "source": args["source"],
+        }},
+    )
+
+    return [
+        types.TextContent(
+            type="text",
+            text=(
+                f"Evidence submitted for investigation #{args['investigation_id']}. "
+                f"Status: {result.get('status')}."
+            ),
         )
     ]
 

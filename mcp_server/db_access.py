@@ -1177,3 +1177,157 @@ def get_active_tools_for_agent(agent_id: str):
         dict(row)
         for row in rows
     ]
+# Suspicious Activity Investigation additions
+
+def get_customer(customer_id: int):
+    """Single customer lookup — every investigation hangs off this row."""
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT * FROM customers WHERE customer_id = ?", (customer_id,)
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def get_related_employees(customer_id: int):
+    """
+    Employees related to this CUSTOMER (reverse direction of
+    is_self_dealing(), which checks whether an initiating EMPLOYEE has
+    a related customer). Investigating a customer needs the other
+    direction: does any employee have a standing relationship to them.
+    """
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT * FROM employees WHERE related_customer_id = ?",
+        (customer_id,),
+    ).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def get_customer_wire_transfers(account_ids: list[int]):
+    """
+    Full wire_transfers rows (amount, status, destination, timestamp)
+    for these accounts — get_wire_destination_countries() only returns
+    a distinct list of country codes, not enough evidence for an
+    investigation to reason over amounts/status/timing.
+    """
+    if not account_ids:
+        return []
+    conn = get_conn()
+    placeholders = ",".join("?" for _ in account_ids)
+    rows = conn.execute(
+        f"""
+        SELECT *
+        FROM wire_transfers
+        WHERE source_account_id IN ({placeholders})
+        ORDER BY timestamp DESC
+        LIMIT 25
+        """,
+        account_ids,
+    ).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+# ------------------------------------------------------------
+# Investigation lifecycle (investigations table)
+# ------------------------------------------------------------
+
+def create_investigation(customer_id: int, reason: str, status: str, created_at: str) -> int:
+    conn = get_conn()
+    cur = conn.execute(
+        """
+        INSERT INTO investigations (
+            customer_id, reason, status,
+            risk_level, confidence, decision, decision_reason,
+            created_at, updated_at
+        )
+        VALUES (?, ?, ?, 'unknown', NULL, NULL, NULL, ?, ?)
+        """,
+        (customer_id, reason, status, created_at, created_at),
+    )
+    conn.commit()
+    investigation_id = cur.lastrowid
+    conn.close()
+    return investigation_id
+
+
+def get_investigation(investigation_id: int):
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT * FROM investigations WHERE investigation_id = ?",
+        (investigation_id,),
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def update_investigation(investigation_id: int, updated_at: str, **fields) -> None:
+    """Generic partial update — only columns passed in `fields` are touched."""
+    if not fields:
+        return
+    conn = get_conn()
+    set_clause = ", ".join(f"{k} = ?" for k in fields.keys())
+    values = list(fields.values()) + [updated_at, investigation_id]
+    conn.execute(
+        f"UPDATE investigations SET {set_clause}, updated_at = ? WHERE investigation_id = ?",
+        values,
+    )
+    conn.commit()
+    conn.close()
+
+
+def list_open_investigations():
+    """Everything not in a terminal status — for the admin platform's list view."""
+    conn = get_conn()
+    rows = conn.execute(
+        """
+        SELECT * FROM investigations
+        WHERE status NOT IN ('closed', 'rejected')
+        ORDER BY updated_at DESC
+        """
+    ).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+# ------------------------------------------------------------
+# Evidence (investigation_evidence table)
+# ------------------------------------------------------------
+
+def add_investigation_evidence(
+    investigation_id: int,
+    evidence_type: str,
+    evidence_data: str,
+    source: str,
+    created_at: str,
+) -> int:
+    conn = get_conn()
+    cur = conn.execute(
+        """
+        INSERT INTO investigation_evidence
+        (investigation_id, evidence_type, evidence_data, source, created_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (investigation_id, evidence_type, evidence_data, source, created_at),
+    )
+    conn.commit()
+    evidence_id = cur.lastrowid
+    conn.close()
+    return evidence_id
+
+
+def get_investigation_evidence(investigation_id: int):
+    conn = get_conn()
+    rows = conn.execute(
+        """
+        SELECT id, evidence_type, evidence_data, source, created_at
+        FROM investigation_evidence
+        WHERE investigation_id = ?
+        ORDER BY created_at ASC
+        """,
+        (investigation_id,),
+    ).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]

@@ -218,6 +218,35 @@ class ValidateInvestigationArgs(BaseModel):
     task: str = Field(min_length=1)
     candidate: str = Field(min_length=1)
 
+
+class GetRelatedEmployeesArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    customer_id: int = Field(ge=1)
+
+
+class GetCustomerWireHistoryArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    customer_id: int = Field(ge=1)
+
+
+class CreateInvestigationArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    customer_id: int = Field(ge=1)
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class GetInvestigationArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    investigation_id: int = Field(ge=1)
+
+
+class SubmitInvestigationEvidenceArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    investigation_id: int = Field(ge=1)
+    evidence_type: str = Field(min_length=1, max_length=100)
+    evidence_data: str = Field(min_length=1)
+    source: str = Field(min_length=1, max_length=200)
+
 TOOL_VALIDATORS = {
     "login": LoginArgs,
     "get_account": GetAccountArgs,
@@ -227,4 +256,103 @@ TOOL_VALIDATORS = {
     "get_transaction_history": GetTransactionHistoryArgs,
     "check_sanctions": CheckSanctionsArgs,
     "validate_investigation": ValidateInvestigationArgs,
+    "get_related_employees": GetRelatedEmployeesArgs,
+    "get_customer_wire_history": GetCustomerWireHistoryArgs,
+    "create_investigation": CreateInvestigationArgs,
+    "get_investigation": GetInvestigationArgs,
+    "submit_investigation_evidence": SubmitInvestigationEvidenceArgs,
+}
+
+# Suspicious Activity Investigation additions
+
+# Same conventions as the rest of the file: required fields,
+# additionalProperties: false, gated to compliance/fraud roles the
+# same way batch_sanctions_scan and the other investigation read
+
+GET_RELATED_EMPLOYEES_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "customer_id": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Positive customer ID to check for related employees (self-dealing evidence).",
+        },
+    },
+    "required": ["customer_id"],
+    "additionalProperties": False,
+}
+
+GET_CUSTOMER_WIRE_HISTORY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "customer_id": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Positive customer ID whose full wire transfer history (across all accounts) should be retrieved.",
+        },
+    },
+    "required": ["customer_id"],
+    "additionalProperties": False,
+}
+
+CREATE_INVESTIGATION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "customer_id": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Positive customer ID this investigation is about.",
+        },
+        "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500,
+            "description": "Why this investigation was opened.",
+        },
+    },
+    "required": ["customer_id", "reason"],
+    "additionalProperties": False,
+}
+
+GET_INVESTIGATION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "investigation_id": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Positive investigation ID from the investigations table.",
+        },
+    },
+    "required": ["investigation_id"],
+    "additionalProperties": False,
+}
+
+SUBMIT_INVESTIGATION_EVIDENCE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "investigation_id": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Positive investigation ID this evidence belongs to.",
+        },
+        "evidence_type": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "description": "What kind of evidence this is, e.g. 'customer_statement', 'source_of_funds'.",
+        },
+        "evidence_data": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The evidence content itself (free text, or a JSON-encoded structured payload).",
+        },
+        "source": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "Where this evidence came from, e.g. 'compliance_team', 'customer_email'.",
+        },
+    },
+    "required": ["investigation_id", "evidence_type", "evidence_data", "source"],
+    "additionalProperties": False,
 }
