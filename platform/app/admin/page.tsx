@@ -11,9 +11,24 @@ type Agent = {
   assignedToolCount: number;
 };
 
+type WorkflowTicket = {
+  id: number;
+  workflowType: string;
+  wireId: number | null;
+  reviewId: number | null;
+  status: string;
+  errorType: string | null;
+  errorMessage: string | null;
+  failedNode: string | null;
+  createdAt: string;
+  resolvedAt: string | null;
+};
+
 export default function AdminPage() {
   const [agents, setAgents] = useState<Agent[]>([]);
+  const [tickets, setTickets] = useState<WorkflowTicket[]>([]);
   const [loading, setLoading] = useState(true);
+  const [ticketsLoading, setTicketsLoading] = useState(true);
 
   useEffect(() => {
     async function loadAgents() {
@@ -33,8 +48,30 @@ export default function AdminPage() {
       }
     }
 
+    async function loadTickets() {
+      try {
+        const res = await fetch('/api/admin/tickets')
+
+        if (!res.ok) {
+          throw new Error('Failed to load tickets');
+        }
+
+        const data = await res.json();
+        setTickets(data);
+      } catch (error) {
+        console.error(error);
+      } finally {
+        setTicketsLoading(false);
+      }
+    }
+
     loadAgents();
+    loadTickets();
   }, []);
+
+  const openTickets = tickets.filter(
+    (ticket) => ticket.status !== 'resolved'
+  ).length;
 
   return (
     <div className="min-h-screen bg-background p-8">
@@ -47,7 +84,7 @@ export default function AdminPage() {
             </h1>
 
             <p className="mt-2 text-muted-foreground">
-              Manage agents, tools, and RAG documents.
+              Manage agents, tools, RAG documents, and workflow tickets.
             </p>
           </div>
 
@@ -59,15 +96,14 @@ export default function AdminPage() {
           </Link>
         </div>
 
-
         <div className="grid gap-6 md:grid-cols-3">
 
-          <div className="rounded-xl border p-6 md:col-span-3">
+          {/* Agents */}
 
-            <h2 className="text-lg font-semibold mb-4">
+          <div className="rounded-xl border p-6 md:col-span-3">
+            <h2 className="mb-4 text-lg font-semibold">
               Agents
             </h2>
-
 
             {loading && (
               <p className="text-muted-foreground">
@@ -75,25 +111,19 @@ export default function AdminPage() {
               </p>
             )}
 
-
             {!loading && agents.length === 0 && (
               <p className="text-muted-foreground">
                 No agents found.
               </p>
             )}
 
-
             <div className="grid gap-4 md:grid-cols-2">
-
               {agents.map((agent) => (
-
                 <div
                   key={agent.id}
                   className="rounded-lg border p-4"
                 >
-
-                  <div className="flex justify-between items-start">
-
+                  <div className="flex items-start justify-between">
                     <h3 className="font-semibold">
                       {agent.name}
                     </h3>
@@ -101,22 +131,18 @@ export default function AdminPage() {
                     <span className="text-xs text-green-600">
                       {agent.status}
                     </span>
-
                   </div>
-
 
                   <p className="mt-2 text-sm text-muted-foreground">
                     {agent.description}
                   </p>
 
-
                   <p className="mt-3 text-sm">
                     Tools:
-                    <span className="font-semibold ml-1">
+                    <span className="ml-1 font-semibold">
                       {agent.assignedToolCount}
                     </span>
                   </p>
-
 
                   <Link
                     href={`/admin/agents/${agent.id}`}
@@ -124,16 +150,12 @@ export default function AdminPage() {
                   >
                     Manage Tools
                   </Link>
-
                 </div>
-
               ))}
-
             </div>
-
           </div>
 
-
+          {/* Tools */}
 
           <div className="rounded-xl border p-6">
             <h2 className="text-lg font-semibold">
@@ -150,10 +172,9 @@ export default function AdminPage() {
             >
               Open Tools
             </Link>
-
           </div>
 
-
+          {/* RAG */}
 
           <div className="rounded-xl border p-6">
             <h2 className="text-lg font-semibold">
@@ -170,12 +191,45 @@ export default function AdminPage() {
             >
               Open RAG
             </Link>
-
           </div>
 
+          {/* Workflow Tickets */}
+
+          <div className="rounded-xl border p-6">
+            <div className="flex items-start justify-between">
+              <h2 className="text-lg font-semibold">
+                Workflow Tickets
+              </h2>
+
+              {!ticketsLoading && openTickets > 0 && (
+                <span className="rounded-full bg-red-100 px-2 py-1 text-xs font-semibold text-red-700">
+                  {openTickets} open
+                </span>
+              )}
+            </div>
+
+            <p className="mt-2 text-sm text-muted-foreground">
+              Monitor workflow failures and recovery tickets.
+            </p>
+
+            {!ticketsLoading && (
+              <p className="mt-3 text-sm">
+                Total tickets:
+                <span className="ml-1 font-semibold">
+                  {tickets.length}
+                </span>
+              </p>
+            )}
+
+            <Link
+              href="/admin/tickets"
+              className="mt-4 inline-block text-sm underline"
+            >
+              Open Tickets
+            </Link>
+          </div>
 
         </div>
-
       </div>
     </div>
   );

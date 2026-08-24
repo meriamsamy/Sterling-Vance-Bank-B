@@ -250,3 +250,79 @@ export function getToolAssignments(
 
   return rows;
 }
+export interface HumanReviewTaskRow {
+  task_id: number;
+  workflow_type: string;
+  wire_id: number | null;
+  review_id: number | null;
+  status: string;
+  reason: string;
+  recommended_action: string | null;
+  assigned_to: number | null;
+  decision: string | null;
+  notes: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+export function getHumanReviewTasks(): HumanReviewTaskRow[] {
+  const rows = db()
+    .prepare(
+      `
+      SELECT
+        task_id,
+        workflow_type,
+        wire_id,
+        review_id,
+        status,
+        reason,
+        recommended_action,
+        assigned_to,
+        decision,
+        notes,
+        created_at,
+        completed_at
+      FROM human_review_tasks
+      ORDER BY created_at DESC
+      `
+    )
+    .all() as unknown as HumanReviewTaskRow[];
+
+  return rows;
+}
+export interface WorkflowTicketRow {
+  ticket_id: number;
+  workflow_type: string;
+  wire_id: number | null;
+  review_id: number | null;
+  status: string;
+  error_type: string | null;
+  error_message: string | null;
+  failed_node: string | null;
+  created_at: string;
+  resolved_at: string | null;
+}
+
+export function getWorkflowTickets(): WorkflowTicketRow[] {
+  const rows = db()
+    .prepare(
+      `
+      SELECT
+        ticket_id,
+        workflow_type,
+        wire_id,
+        review_id,
+        status,
+        error_type,
+        error_message,
+        failed_node,
+        created_at,
+        resolved_at
+      FROM workflow_tickets
+      ORDER BY created_at DESC
+      `
+    )
+    .all() as unknown as WorkflowTicketRow[];
+
+  return rows;
+}

@@ -3,11 +3,13 @@
 import * as React from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+
 import {
   LayoutDashboard,
   Bot,
   Wrench,
   FileText,
+  Ticket,
   Building2,
   ArrowLeftRight,
   Sun,
@@ -18,12 +20,14 @@ import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { Badge } from '@/components/ui/badge';
+
 import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
+
 import { useTheme } from '@/components/theme-provider';
 
 const NAV_ITEMS = [
@@ -31,6 +35,7 @@ const NAV_ITEMS = [
   { href: '/admin/agents', label: 'Agents', icon: Bot },
   { href: '/admin/tools', label: 'MCP Tools', icon: Wrench },
   { href: '/admin/documents', label: 'RAG Documents', icon: FileText },
+  { href: '/admin/tickets', label: 'Workflow Tickets', icon: Ticket },
 ] as const;
 
 export function AdminSidebar() {
@@ -43,10 +48,12 @@ export function AdminSidebar() {
         <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/15 ring-1 ring-primary/30">
           <Building2 className="h-5 w-5 text-primary" />
         </div>
+
         <div className="flex flex-col leading-tight">
           <span className="text-sm font-semibold tracking-tight">
             Sentinel
           </span>
+
           <span className="text-[11px] text-muted-foreground">
             Admin Console
           </span>
@@ -59,12 +66,15 @@ export function AdminSidebar() {
         <p className="px-2 pb-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
           Platform
         </p>
+
         {NAV_ITEMS.map((item) => {
           const active =
             item.href === '/admin'
               ? pathname === '/admin'
               : pathname.startsWith(item.href);
+
           const Icon = item.icon;
+
           return (
             <Link
               key={item.href}
@@ -86,6 +96,7 @@ export function AdminSidebar() {
               >
                 <Icon className="h-4 w-4" />
               </div>
+
               <span
                 className={cn(
                   'text-sm font-medium',
@@ -105,6 +116,7 @@ export function AdminSidebar() {
         <p className="px-2 pb-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
           User area
         </p>
+
         <Link
           href="/user"
           className="group flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-white/5"
@@ -112,6 +124,7 @@ export function AdminSidebar() {
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-white/5 text-muted-foreground group-hover:text-sidebar-foreground">
             <ArrowLeftRight className="h-4 w-4" />
           </div>
+
           <span className="text-sm font-medium text-sidebar-foreground/90">
             User Chat
           </span>
@@ -136,12 +149,14 @@ export function AdminSidebar() {
                   )}
                 </Button>
               </TooltipTrigger>
+
               <TooltipContent side="top">
                 {theme === 'dark' ? 'Light mode' : 'Dark mode'}
               </TooltipContent>
             </Tooltip>
           </TooltipProvider>
         </div>
+
         <Badge
           variant="secondary"
           className="border-0 bg-primary/15 text-[10px] text-primary"
