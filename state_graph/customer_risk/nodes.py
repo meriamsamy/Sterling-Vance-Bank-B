@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
+import sqlite3
 from typing import Any, Optional
 
 from config import API_KEY
