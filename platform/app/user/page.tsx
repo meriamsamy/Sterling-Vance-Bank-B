@@ -2,7 +2,12 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 
-type AgentId = 'customer-risk-monitoring' | 'planning-decomposition' | 'memory-rag' | 'sanctions-change';
+type AgentId =
+  | 'customer-risk-monitoring'
+  | 'planning-decomposition'
+  | 'memory-rag'
+  | 'sanctions-change'
+  | 'suspicious-activity';
 
 interface Message {
   sender: 'user' | 'agent';
@@ -29,6 +34,11 @@ const AGENTS: { id: AgentId; name: string; description: string }[] = [
     id: 'sanctions-change',
     name: 'Sanctions Change Monitoring',
     description: 'Monitors sanctions changes and re-evaluates affected wire reviews.',
+  },
+  {
+    id: 'suspicious-activity',
+    name: 'Suspicious Activity',
+    description: 'Opens and drives suspicious-activity investigations with evidence and human review.',
   },
 ];
 
@@ -71,6 +81,16 @@ export default function UnifiedAgentChatPlatform() {
       {
         sender: 'agent',
         text: 'Sanctions Change Monitoring is ready. I can review sanctions-related changes and affected wire transfers.',
+      },
+    ],
+  },
+
+  'suspicious-activity': {
+    threadId: crypto.randomUUID(),
+    messages: [
+      {
+        sender: 'agent',
+        text: 'Suspicious Activity investigation is ready. Give me a customer ID to open an investigation, or ask for its status.',
       },
     ],
   },
@@ -121,12 +141,18 @@ export default function UnifiedAgentChatPlatform() {
         throw new Error(data.error || 'An error occurred while connecting to the agent');
       }
 
+      // Normalize the backend payload to displayable text.
+      const reply =
+        typeof data.response === 'string' && data.response.trim()
+          ? data.response
+          : JSON.stringify(data, null, 2);
+
       // Add the real agent response
       setSessions((prev) => ({
         ...prev,
         [selectedAgent]: {
           ...prev[selectedAgent],
-          messages: [...prev[selectedAgent].messages, { sender: 'agent', text: data.response }],
+          messages: [...prev[selectedAgent].messages, { sender: 'agent', text: reply }],
         },
       }));
     } catch (err: any) {

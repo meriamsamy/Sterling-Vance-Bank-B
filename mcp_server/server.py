@@ -15,6 +15,7 @@ Covers all 8 protocol concerns.
 """
 
 import asyncio
+import json
 import os
 import sys
 import re
@@ -96,8 +97,8 @@ from state_graph.sanctions_change.sanctions_graph_runner import (
     _get_review_state_async as sanctions_get_review_state,
     _resume_after_admin_async as sanctions_resume_after_admin,
     _resume_after_ticket_resolution_async as sanctions_resume_after_ticket,
+    _resume_after_event_async as sanctions_resume_after_event_async,
 )
-
 
 # ============================================================
 # CUSTOMER RISK GRAPH
@@ -123,7 +124,7 @@ sanctions_graph = graph_builder.compile(
 
 def extract_customer_id(message: str) -> int:
     match = re.search(
-        r"customer(?:\s+id)?\s*#?\s*(\d+)",
+        r"customer(?:[\s_]*(?:id|no|number))?[\s:=_#]*(\d+)",
         message,
         re.IGNORECASE,
     )
@@ -137,9 +138,9 @@ def extract_customer_id(message: str) -> int:
 
 def extract_wire_id(message: str) -> int:
     match = re.search(
-        r"(?:wire|transfer)"
-        r"(?:\s+id)?"
-        r"\s*#?\s*(\d+)",
+        r"(?:wire|transfer|payment)"
+        r"(?:[\s_]*(?:id|no|number))?"
+        r"[\s:=_#]*(\d+)",
         message,
         re.IGNORECASE,
     )
@@ -149,6 +150,11 @@ def extract_wire_id(message: str) -> int:
             "Example: 'Review wire 15'."
         )
     return int(match.group(1))
+
+
+# Last wire each UI thread reviewed - lets a follow-up message like
+# "any changes?" continue the same review without repeating the ID.
+_LAST_WIRE_BY_THREAD: dict[str, int] = {}
 
 
 # ============================================================
@@ -1563,7 +1569,16 @@ mcp_session_manager = StreamableHTTPSessionManager(app=server)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     async with mcp_session_manager.run():
-        yield
+        try:
+            yield
+        finally:
+            # Close the UI gateway's MCP self-connections cleanly.
+            try:
+                from agent_gateway import shutdown as gateway_shutdown
+
+                await gateway_shutdown()
+            except Exception:
+                pass
 
 
 app = FastAPI(lifespan=lifespan)
@@ -1950,46 +1965,116 @@ async def invoke_agent(data: dict):
 
     if agent_name == "customer-risk-monitoring":
 
+        config = {
+            "configurable": {"thread_id": f"customer-risk:{thread_id}"}
+        }
+
+        try:
+            existing = customer_risk_graph.get_state(config)
+        except Exception as e:
+            raise HTTPException(
+                status_code=500, detail=f"Customer Risk Graph failed: {str(e)}"
+            )
+
         try:
             customer_id = extract_customer_id(message)
-
-            config = {
-                "configurable": {"thread_id": f"customer-risk:{thread_id}"}
-            }
-
-            existing = customer_risk_graph.get_state(config)
-
-            if existing.next:
-                response_text = (
-                    "This Customer Risk review is currently paused "
-                    "awaiting admin action (Human-in-the-Loop). "
-                    "Please resolve it from the admin panel."
-                )
-            else:
-                initial_state = {
-                    "run_id": thread_id,
-                    "customer_id": customer_id,
-                    "message": message,
-                    "last_processed_transaction_id": None,
-                    "checkpoint_version": 0,
+        except ValueError:
+            # No explicit "customer N" in this message: continue with the
+            # customer this thread is already reviewing (thread checkpoint),
+            # or ask a friendly follow-up instead of failing the request.
+            customer_id = (existing.values or {}).get("customer_id")
+            if customer_id is None:
+                return {
+                    "response": (
+                        "Customer Risk Monitoring\n\n"
+                        "I could not find a customer ID in that message. "
+                        "Which customer should I review? "
+                        "Example: 'Check customer 1 for risk changes'."
+                    ),
+                    "thread_id": thread_id,
                 }
 
-                result = customer_risk_graph.invoke(initial_state, config=config)
+        try:
+            if existing.next:
+                # Paused on the graph's own HITL interrupt - surface it so the
+                # admin can resume via POST /customer-risk/resume. The UI never
+                # approves or bypasses it.
+                interrupt_value = None
+                for task in getattr(existing, "tasks", ()) or ():
+                    interrupts = getattr(task, "interrupts", ()) or ()
+                    if interrupts:
+                        interrupt_value = interrupts[0].value
+                        break
 
                 response_text = (
                     "Customer Risk Monitoring\n\n"
                     f"Customer ID: {customer_id}\n"
-                    f"Status: {result.get('status', 'N/A')}\n"
-                    f"Current Risk: {result.get('current_risk_level', 'N/A')}\n"
-                    f"Assessed Risk: {result.get('assessed_risk_level', 'N/A')}\n"
-                    f"Confidence: {result.get('assessment_confidence', 'N/A')}\n"
-                    f"Reason: {result.get('risk_reason', 'N/A')}"
+                    "Status: PAUSED - awaiting a human-in-the-loop decision "
+                    "(admin approval required).\n\n"
+                    "Review request:\n"
+                    f"{json.dumps(interrupt_value, indent=2, default=str)}\n\n"
+                    "An administrator must resolve it with "
+                    "POST /customer-risk/resume "
+                    "({thread_id, resume: {decision: approve|reject, reason}}). "
+                    "It is never auto-approved from the chat."
                 )
+                payload = {"response": response_text, "thread_id": thread_id}
+                if interrupt_value is not None:
+                    payload["interrupt"] = interrupt_value
+                return payload
+
+            initial_state = {
+                "run_id": thread_id,
+                "customer_id": customer_id,
+                "message": message,
+                "last_processed_transaction_id": None,
+                "checkpoint_version": 0,
+            }
+
+            result = customer_risk_graph.invoke(initial_state, config=config)
+
+            response_text = (
+                "Customer Risk Monitoring\n\n"
+                f"Customer ID: {customer_id}\n"
+                f"Status: {result.get('status', 'N/A')}\n"
+                f"Current Risk: {result.get('current_risk_level', 'N/A')}\n"
+                f"Assessed Risk: {result.get('assessed_risk_level', 'N/A')}\n"
+                f"Confidence: {result.get('assessment_confidence', 'N/A')}\n"
+                f"Reason: {result.get('risk_reason', 'N/A')}"
+            )
+            if result.get("status") == "failed":
+                response_text += (
+                    "\nFailure ticket: "
+                    f"{result.get('failure_ticket_id', 'n/a')}"
+                )
+
+            # If the run just paused on the HITL interrupt, tell the caller why.
+            after = customer_risk_graph.get_state(config)
+            if after.next:
+                interrupt_value = None
+                for task in getattr(after, "tasks", ()) or ():
+                    interrupts = getattr(task, "interrupts", ()) or ()
+                    if interrupts:
+                        interrupt_value = interrupts[0].value
+                        break
+                response_text += (
+                    "\n\nPAUSED for human-in-the-loop review:\n"
+                    f"{json.dumps(interrupt_value, indent=2, default=str)}\n"
+                    "An administrator must resume it via "
+                    "POST /customer-risk/resume."
+                )
+                payload = {"response": response_text, "thread_id": thread_id}
+                if interrupt_value is not None:
+                    payload["interrupt"] = interrupt_value
+                return payload
 
             return {"response": response_text, "thread_id": thread_id}
 
         except HTTPException:
             raise
+        except ValueError as e:
+            # e.g. the customer does not exist - a client mistake, not a 500
+            raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
             raise HTTPException(
                 status_code=500, detail=f"Customer Risk Graph failed: {str(e)}"
@@ -1998,7 +2083,23 @@ async def invoke_agent(data: dict):
     elif agent_name == "sanctions-change":
 
         try:
-            wire_id = extract_wire_id(message)
+            try:
+                wire_id = extract_wire_id(message)
+            except ValueError:
+                # Continue with the wire this thread is already reviewing.
+                wire_id = _LAST_WIRE_BY_THREAD.get(thread_id)
+                if wire_id is None:
+                    return {
+                        "response": (
+                            "Sanctions Change Monitoring\n\n"
+                            "I could not find a wire or transfer ID in that "
+                            "message. Which wire should I review? "
+                            "Example: 'Review wire 11'."
+                        ),
+                        "thread_id": thread_id,
+                    }
+            _LAST_WIRE_BY_THREAD[thread_id] = wire_id
+
             sanctions_thread_id = f"sanctions:{thread_id}:{wire_id}"
             config = {"configurable": {"thread_id": sanctions_thread_id}}
 
@@ -2057,6 +2158,11 @@ async def invoke_agent(data: dict):
                     f"Recommended Action: {result.get('recommended_action', 'N/A')}\n"
                     f"Analysis: {result.get('analysis', 'N/A')}"
                 )
+                if result.get("failure"):
+                    response_text += (
+                        "\n\nFailure detail:\n"
+                        f"{json.dumps(result.get('failure'), indent=2, default=str)}"
+                    )
 
             return {
                 "response": response_text,
@@ -2074,10 +2180,54 @@ async def invoke_agent(data: dict):
             )
 
     elif agent_name == "planning-decomposition":
-        response_text = f"[Planning Decomposition Live Agent] Processed: {message}"
+        # Real Planning & Decomposition agent (planning_agent.PlanningAgent),
+        # connected through the gateway layer instead of a stub response.
+        try:
+            from agent_gateway import GatewayError, run_planning_request
+
+            response_text = await run_planning_request(message, thread_id)
+        except GatewayError as e:
+            raise HTTPException(status_code=500, detail=str(e))
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Planning & Decomposition agent failed: {str(e)}",
+            )
 
     elif agent_name == "memory-rag":
-        response_text = f"[Memory & RAG Live Agent] Processed: {message}"
+        # Real Memory & RAG pipeline (client/client.py), connected through
+        # the gateway layer instead of a stub response.
+        try:
+            from agent_gateway import GatewayError, run_memory_rag_request
+
+            response_text = await run_memory_rag_request(message, thread_id)
+        except GatewayError as e:
+            raise HTTPException(status_code=500, detail=str(e))
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Memory & RAG agent failed: {str(e)}",
+            )
+
+    elif agent_name == "suspicious-activity":
+        # Real suspicious-activity investigation graph
+        # (state_graph/suspicious_activity/investigation_graph_runner.py).
+        try:
+            from agent_gateway import (
+                GatewayError,
+                run_suspicious_activity_request,
+            )
+
+            response_text = await run_suspicious_activity_request(
+                message, thread_id
+            )
+        except GatewayError as e:
+            raise HTTPException(status_code=500, detail=str(e))
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Suspicious Activity workflow failed: {str(e)}",
+            )
 
     else:
         raise HTTPException(status_code=400, detail=f"Unknown agent: {agent_name}")
@@ -2099,11 +2249,15 @@ async def resume_sanctions(data: dict):
     if resume_data is None:
         raise HTTPException(status_code=400, detail="Missing resume data.")
 
-    sanctions_thread_id = f"sanctions:{thread_id}:{wire_id}"
-    config = {"configurable": {"thread_id": sanctions_thread_id}}
-
     try:
-        result = sanctions_graph.invoke(Command(resume=resume_data), config=config)
+        sanctions_thread_id = f"sanctions:{thread_id}:{wire_id}"
+
+        result = await sanctions_resume_after_event_async(
+            wire_id=wire_id,
+            event_type=resume_data.get("event_type"),
+            event_id=resume_data.get("event_id"),
+            thread_id=sanctions_thread_id,
+        )
 
         return {
             "response": "Sanctions review resumed successfully.",
@@ -2115,7 +2269,65 @@ async def resume_sanctions(data: dict):
 
     except Exception as e:
         raise HTTPException(
-            status_code=500, detail=f"Failed to resume sanctions review: {str(e)}"
+            status_code=500,
+            detail=f"Failed to resume sanctions review: {str(e)}",
+        )
+
+
+@app.post("/customer-risk/resume")
+async def resume_customer_risk(data: dict):
+    """Resume a Customer Risk review paused on its HITL interrupt.
+
+    Mirrors POST /sanctions/resume and state_graph/customer_risk/demo.py's
+    contract: {thread_id, resume: {decision: approve|reject, reason}}.
+    The customer-risk graph's interrupt lives only in its checkpoint
+    (no human_review_tasks row is created for it), so this endpoint is the
+    supported resume path - the chat UI never resolves it itself.
+    """
+    thread_id = data.get("thread_id")
+    resume_data = data.get("resume")
+
+    if not thread_id:
+        raise HTTPException(status_code=400, detail="Missing thread_id.")
+    if not isinstance(resume_data, dict):
+        raise HTTPException(
+            status_code=400,
+            detail="Missing resume data: expected "
+            "{decision: approve|reject, reason: string}.",
+        )
+    if resume_data.get("decision") not in ("approve", "reject"):
+        raise HTTPException(
+            status_code=400,
+            detail="resume.decision must be 'approve' or 'reject'.",
+        )
+    resume_data.setdefault("reason", "Manual review completed.")
+
+    config = {"configurable": {"thread_id": f"customer-risk:{thread_id}"}}
+
+    try:
+        existing = customer_risk_graph.get_state(config)
+        if not existing.next:
+            return {
+                "response": (
+                    "This Customer Risk review is not paused - nothing to resume."
+                ),
+                "thread_id": thread_id,
+            }
+
+        result = customer_risk_graph.invoke(
+            Command(resume=resume_data), config=config
+        )
+
+        return {
+            "response": "Customer risk review resumed successfully.",
+            "thread_id": thread_id,
+            "status": result.get("status", "N/A"),
+            "result": result,
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to resume customer risk review: {str(e)}"
         )
 
 
