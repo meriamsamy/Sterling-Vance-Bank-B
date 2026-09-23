@@ -21,8 +21,24 @@ export async function POST(req: Request) {
 
     if (!pythonResponse.ok) {
       const errorText = await pythonResponse.text();
+
+      // FastAPI errors are JSON: {"detail": "..."} - surface the real cause
+      // instead of the raw JSON blob.
+      let message = errorText;
+      try {
+        const parsed = JSON.parse(errorText);
+        if (parsed && parsed.detail !== undefined) {
+          message =
+            typeof parsed.detail === 'string'
+              ? parsed.detail
+              : JSON.stringify(parsed.detail);
+        }
+      } catch {
+        // not JSON - keep the raw text
+      }
+
       return NextResponse.json(
-        { error: `Python Backend Error: ${errorText}` },
+        { error: `Python Backend Error: ${message}` },
         { status: pythonResponse.status }
       );
     }

@@ -19,7 +19,7 @@ from .utils import handle_node_failure
 
 risk_llm = ChatGroq(
     api_key=API_KEY,
-    model="qwen/qwen3.6-27b",
+    model="qwen/qwen3.8-27b",
     temperature=0.0,
     max_tokens=4096,
 )

@@ -5,7 +5,7 @@ from config import API_KEY
 
 llm = ChatGroq(
     api_key=API_KEY,
-    model="qwen/qwen3.6-27b",
+    model="qwen/qwen3.8-27b",
     temperature=0.1
 )
 
