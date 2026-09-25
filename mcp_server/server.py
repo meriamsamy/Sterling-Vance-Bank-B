@@ -32,6 +32,8 @@ from mcp.server.stdio import stdio_server
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 
 from mcp_server import db_access as db
+from state_graph.checkpointing_layer import checkpoint_context
+from state_graph.customer_risk.graph import build_customer_risk_graph
 
 from .schemas import (
     LOGIN_SCHEMA,
@@ -61,15 +63,18 @@ from fastapi.middleware.cors import CORSMiddleware
 # ============================================================
 
 from langgraph.types import Command
-from langgraph.checkpoint.memory import MemorySaver
 
 
 # ============================================================
 # CUSTOMER RISK GRAPH INTEGRATION
 # ============================================================
 
-from state_graph.customer_risk.graph import build_customer_risk_graph
-
+from state_graph.customer_risk.customer_risk_runner import (
+    default_thread_id as customer_risk_default_thread_id,
+    start_customer_risk_async,
+    get_customer_risk_state_async,
+    resume_customer_risk_async,
+)
 
 # ============================================================
 # SANCTIONS STATE GRAPH INTEGRATION
@@ -94,27 +99,11 @@ from state_graph.sanctions_change.sanctions_graph import graph_builder
 # running inside an event loop.
 from state_graph.sanctions_change.sanctions_graph_runner import (
     default_thread_id as sanctions_default_thread_id,
+    _start_review_async as sanctions_start_review_async,
     _get_review_state_async as sanctions_get_review_state,
     _resume_after_admin_async as sanctions_resume_after_admin,
     _resume_after_ticket_resolution_async as sanctions_resume_after_ticket,
     _resume_after_event_async as sanctions_resume_after_event_async,
-)
-
-# ============================================================
-# CUSTOMER RISK GRAPH
-# ============================================================
-
-customer_risk_graph = build_customer_risk_graph()
-
-
-# ============================================================
-# SANCTIONS GRAPH
-# ============================================================
-
-sanctions_checkpointer = MemorySaver()
-
-sanctions_graph = graph_builder.compile(
-    checkpointer=sanctions_checkpointer
 )
 
 
@@ -1960,125 +1949,225 @@ async def invoke_agent(data: dict):
 
     if not agent_name or not message:
         raise HTTPException(
-            status_code=400, detail="Missing agent_name or message."
+            status_code=400,
+            detail="Missing agent_name or message.",
         )
 
     if agent_name == "customer-risk-monitoring":
-
-        config = {
-            "configurable": {"thread_id": f"customer-risk:{thread_id}"}
-        }
-
         try:
-            existing = customer_risk_graph.get_state(config)
-        except Exception as e:
-            raise HTTPException(
-                status_code=500, detail=f"Customer Risk Graph failed: {str(e)}"
-            )
-
-        try:
-            customer_id = extract_customer_id(message)
-        except ValueError:
-            # No explicit "customer N" in this message: continue with the
-            # customer this thread is already reviewing (thread checkpoint),
-            # or ask a friendly follow-up instead of failing the request.
-            customer_id = (existing.values or {}).get("customer_id")
-            if customer_id is None:
+            try:
+                customer_id = extract_customer_id(message)
+            except ValueError:
                 return {
                     "response": (
                         "Customer Risk Monitoring\n\n"
                         "I could not find a customer ID in that message. "
-                        "Which customer should I review? "
+                        "Which customer should I review?\n\n"
                         "Example: 'Check customer 1 for risk changes'."
                     ),
                     "thread_id": thread_id,
                 }
 
-        try:
-            if existing.next:
-                # Paused on the graph's own HITL interrupt - surface it so the
-                # admin can resume via POST /customer-risk/resume. The UI never
-                # approves or bypasses it.
-                interrupt_value = None
-                for task in getattr(existing, "tasks", ()) or ():
-                    interrupts = getattr(task, "interrupts", ()) or ()
-                    if interrupts:
-                        interrupt_value = interrupts[0].value
-                        break
+            workflow_thread_id = customer_risk_default_thread_id(
+                customer_id
+            )
 
-                response_text = (
-                    "Customer Risk Monitoring\n\n"
-                    f"Customer ID: {customer_id}\n"
-                    "Status: PAUSED - awaiting a human-in-the-loop decision "
-                    "(admin approval required).\n\n"
-                    "Review request:\n"
-                    f"{json.dumps(interrupt_value, indent=2, default=str)}\n\n"
-                    "An administrator must resolve it with "
-                    "POST /customer-risk/resume "
-                    "({thread_id, resume: {decision: approve|reject, reason}}). "
-                    "It is never auto-approved from the chat."
+            existing = await get_customer_risk_state_async(
+                customer_id=customer_id,
+                thread_id=workflow_thread_id,
+            )
+
+            # ----------------------------------------------------------
+            # Check for an existing REAL LangGraph interrupt.
+            #
+            # snapshot.next means there is a next node to execute.
+            # It does NOT mean that the workflow is waiting for HITL.
+            # ----------------------------------------------------------
+            interrupt_value = None
+
+            for task in getattr(existing, "tasks", ()) or ():
+                interrupts = getattr(task, "interrupts", ()) or ()
+
+                if interrupts:
+                    interrupt_value = interrupts[0].value
+                    break
+
+            # ----------------------------------------------------------
+            # REAL HITL pause
+            #
+            # Only customer_risk_review requires an administrator.
+            # customer_risk_waiting_for_activity is NOT HITL.
+            # ----------------------------------------------------------
+            if (
+                interrupt_value is not None
+                and interrupt_value.get("type") == "customer_risk_review"
+            ):
+                graph_state = existing.values or {}
+
+                return {
+                    "response": (
+                        "Customer Risk Monitoring\n\n"
+                        f"Customer ID: {customer_id}\n"
+                        f"Status: {graph_state.get('status', 'paused')}\n"
+                        "PAUSED - awaiting human-in-the-loop decision "
+                        "(admin approval required).\n\n"
+                        "Review request:\n"
+                        f"{json.dumps(interrupt_value, indent=2, default=str)}\n\n"
+                        "An administrator must resolve the HITL task "
+                        "from the Admin Platform."
+                    ),
+                    "thread_id": thread_id,
+                    "workflow_thread_id": workflow_thread_id,
+                    "status": "paused",
+                    "interrupt": interrupt_value,
+                }
+
+            # ----------------------------------------------------------
+            # No existing checkpoint -> start a new workflow
+            # ----------------------------------------------------------
+            if not existing.values:
+                started = await start_customer_risk_async(
+                    customer_id=customer_id,
+                    thread_id=workflow_thread_id,
+                    run_id=thread_id,
                 )
-                payload = {"response": response_text, "thread_id": thread_id}
-                if interrupt_value is not None:
-                    payload["interrupt"] = interrupt_value
-                return payload
 
-            initial_state = {
-                "run_id": thread_id,
-                "customer_id": customer_id,
-                "message": message,
-                "last_processed_transaction_id": None,
-                "checkpoint_version": 0,
-            }
+                result = started.get("result") or {}
+                snapshot = started.get("snapshot")
 
-            result = customer_risk_graph.invoke(initial_state, config=config)
+            else:
+                # ------------------------------------------------------
+                # Existing checkpoint.
+                #
+                # If the workflow is not interrupted, continue execution
+                # from the durable checkpoint.
+                # ------------------------------------------------------
+                config = {
+                    "configurable": {
+                        "thread_id": workflow_thread_id
+                    }
+                }
+
+                async with checkpoint_context() as checkpointer:
+                    graph = build_customer_risk_graph(
+                        checkpointer=checkpointer
+                    )
+
+                    result = await graph.ainvoke(
+                        None,
+                        config=config,
+                    )
+
+                    snapshot = await graph.aget_state(config)
+
+            graph_state = (
+                snapshot.values
+                if snapshot is not None and snapshot.values
+                else result
+            ) or {}
 
             response_text = (
                 "Customer Risk Monitoring\n\n"
                 f"Customer ID: {customer_id}\n"
-                f"Status: {result.get('status', 'N/A')}\n"
-                f"Current Risk: {result.get('current_risk_level', 'N/A')}\n"
-                f"Assessed Risk: {result.get('assessed_risk_level', 'N/A')}\n"
-                f"Confidence: {result.get('assessment_confidence', 'N/A')}\n"
-                f"Reason: {result.get('risk_reason', 'N/A')}"
+                f"Status: {graph_state.get('status', 'N/A')}\n"
+                f"Current Risk: "
+                f"{graph_state.get('current_risk_level', 'N/A')}\n"
+                f"Assessed Risk: "
+                f"{graph_state.get('assessed_risk_level', 'N/A')}\n"
+                f"Confidence: "
+                f"{graph_state.get('assessment_confidence', 'N/A')}\n"
+                f"Reason: "
+                f"{graph_state.get('risk_reason', 'N/A')}"
             )
-            if result.get("status") == "failed":
+
+            if graph_state.get("failure_ticket_id"):
                 response_text += (
                     "\nFailure ticket: "
-                    f"{result.get('failure_ticket_id', 'n/a')}"
+                    f"{graph_state.get('failure_ticket_id')}"
                 )
 
-            # If the run just paused on the HITL interrupt, tell the caller why.
-            after = customer_risk_graph.get_state(config)
-            if after.next:
-                interrupt_value = None
-                for task in getattr(after, "tasks", ()) or ():
+            # ----------------------------------------------------------
+            # Check for an interrupt AFTER the workflow execution.
+            # ----------------------------------------------------------
+            interrupt_value = None
+
+            if snapshot is not None:
+                for task in getattr(snapshot, "tasks", ()) or ():
                     interrupts = getattr(task, "interrupts", ()) or ()
+
                     if interrupts:
                         interrupt_value = interrupts[0].value
                         break
+
+            # ----------------------------------------------------------
+            # REAL HITL after execution
+            # ----------------------------------------------------------
+            if (
+                interrupt_value is not None
+                and interrupt_value.get("type") == "customer_risk_review"
+            ):
                 response_text += (
                     "\n\nPAUSED for human-in-the-loop review:\n"
                     f"{json.dumps(interrupt_value, indent=2, default=str)}\n"
-                    "An administrator must resume it via "
-                    "POST /customer-risk/resume."
+                    "An administrator must resolve the HITL task "
+                    "from the Admin Platform."
                 )
-                payload = {"response": response_text, "thread_id": thread_id}
-                if interrupt_value is not None:
-                    payload["interrupt"] = interrupt_value
-                return payload
 
-            return {"response": response_text, "thread_id": thread_id}
+                return {
+                    "response": response_text,
+                    "thread_id": thread_id,
+                    "workflow_thread_id": workflow_thread_id,
+                    "status": "paused",
+                    "interrupt": interrupt_value,
+                }
+
+            # ----------------------------------------------------------
+            # Waiting for new customer activity.
+            #
+            # This is a normal workflow wait, NOT HITL.
+            # ----------------------------------------------------------
+            if (
+                interrupt_value is not None
+                and interrupt_value.get("type")
+                == "customer_risk_waiting_for_activity"
+            ):
+                response_text += (
+                    "\n\nWaiting for new customer activity.\n"
+                    f"Last processed transaction: "
+                    f"{interrupt_value.get('last_processed_transaction_id', 'N/A')}"
+                )
+
+                return {
+                    "response": response_text,
+                    "thread_id": thread_id,
+                    "workflow_thread_id": workflow_thread_id,
+                    "status": "waiting_for_activity",
+                    "interrupt": interrupt_value,
+                }
+
+            return {
+                "response": response_text,
+                "thread_id": thread_id,
+                "workflow_thread_id": workflow_thread_id,
+            }
+
+        except ValueError as e:
+            raise HTTPException(
+                status_code=400,
+                detail=str(e),
+            )
 
         except HTTPException:
             raise
-        except ValueError as e:
-            # e.g. the customer does not exist - a client mistake, not a 500
-            raise HTTPException(status_code=400, detail=str(e))
+
         except Exception as e:
             raise HTTPException(
-                status_code=500, detail=f"Customer Risk Graph failed: {str(e)}"
+                status_code=500,
+                detail=f"Customer Risk Graph failed: {str(e)}",
             )
+
+
+
 
     elif agent_name == "sanctions-change":
 

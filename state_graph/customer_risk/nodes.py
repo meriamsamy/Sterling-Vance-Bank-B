@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
-import sqlite3
-from typing import Any, Optional
+from typing import Any
 
 from config import API_KEY
 from langchain_groq import ChatGroq
@@ -21,7 +20,7 @@ risk_llm = ChatGroq(
     api_key=API_KEY,
     model="qwen/qwen3.8-27b",
     temperature=0.0,
-    max_tokens=4096,
+    max_tokens=512,
 )
 
 
@@ -248,7 +247,26 @@ Use only the provided evidence.
 def risk_review_human_approval(
     state: CustomerRiskState,
 ) -> dict[str, Any]:
-    """Pause the graph and request an admin decision."""
+    """Pause the graph and create a durable admin HITL task."""
+
+    task_id = state.get("hitl_task_id")
+
+    # Create the DB task only once.
+    # The checkpointed state keeps the task ID across restarts.
+    if task_id is None:
+        task_id = db.create_human_review_task(
+            workflow_type="customer_risk",
+            wire_id=None,
+            review_id=state["customer_id"],
+            status="open",
+            reason=state["risk_reason"],
+            recommended_action=(
+                f"Review customer {state['customer_id']} risk assessment: "
+                f"{state['current_risk_level']} -> "
+                f"{state['assessed_risk_level']}"
+            ),
+            created_at=_now(),
+        )
 
     request = {
         "type": "customer_risk_review",
@@ -257,11 +275,13 @@ def risk_review_human_approval(
         "assessed_risk_level": state["assessed_risk_level"],
         "confidence": state["assessment_confidence"],
         "reason": state["risk_reason"],
+        "task_id": task_id,
     }
 
     decision = interrupt(request)
 
     return {
+        "hitl_task_id": task_id,
         "admin_decision": decision["decision"],
         "admin_reason": decision.get("reason"),
         "status": "admin_decision_received",
@@ -274,17 +294,29 @@ def wait_for_activity(
     state: CustomerRiskState,
 ) -> dict[str, Any]:
     """
-    Put the monitoring workflow into its logical waiting state.
+    Pause the monitoring workflow until new customer activity arrives.
 
-    The actual suspend/resume behavior is handled by the graph's
-    persistence/runtime layer.
+    The durable checkpoint preserves the workflow state so an external
+    transaction/activity event can resume the same workflow thread.
     """
 
+    event = interrupt(
+        {
+            "type": "customer_risk_waiting_for_activity",
+            "customer_id": state["customer_id"],
+            "last_processed_transaction_id": state.get(
+                "last_processed_transaction_id"
+            ),
+        }
+    )
+
     return {
-        "status": "waiting_for_activity",
+        "triggering_transaction_id": event.get("transaction_id"),
+        "status": "collecting_activity",
         "current_node": "wait_for_activity",
         "updated_at": _now(),
     }
+
 
 
 def parse_risk_response(
@@ -328,13 +360,20 @@ def apply_admin_decision(
     assessed_risk = state["assessed_risk_level"]
 
     if decision == "approve":
-        with sqlite3.connect("db/bank.db", timeout=30.0) as conn:
-            conn.execute("PRAGMA journal_mode=WAL;")  
+        conn = db.get_conn()
+
+        try:
             conn.execute(
-                "UPDATE customers SET risk_level = ? WHERE customer_id = ?",
+                """
+                UPDATE customers
+                SET risk_level = ?
+                WHERE customer_id = ?
+                """,
                 (assessed_risk, customer_id),
             )
             conn.commit()
+        finally:
+            conn.close()
 
         return {
             "current_risk_level": assessed_risk,

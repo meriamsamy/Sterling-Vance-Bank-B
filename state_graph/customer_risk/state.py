@@ -64,7 +64,7 @@ class CustomerRiskState(TypedDict, total=False):
     # =========================
     # Shared infrastructure
     # =========================
-    hitl_task_id: str | None
+    hitl_task_id: int | None
     failure_ticket_id: str | None
 
     # HITL decision
@@ -74,10 +74,6 @@ class CustomerRiskState(TypedDict, total=False):
     # Audit / checkpoint metadata
     checkpoint_version: int
     
-    # =========================
-    # Persistence / Audit
-    # =========================
-    checkpoint_version: int
     started_at: str
     updated_at: str
 
